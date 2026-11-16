@@ -143,15 +143,16 @@ impl Demod {
         for t in &mut taps {
             *t /= energy;
         }
-        // A block is about a tenth of a second at 600 bit/s and 30 ms at the
-        // fast rates: long enough to measure phase in noise, short enough to
-        // follow a drifting carrier.
-        let block = if bit_rate < 1000.0 {
-            64
-        } else if bit_rate < 5000.0 {
-            128
-        } else {
-            256
+        // A block is about a tenth of a second at the slow rates and 25 to
+        // 60 ms at the fast ones: long enough to measure phase in noise,
+        // short enough to follow a drifting carrier. (Tried 128 to 1024 on
+        // weak 8400 and 10500 bit/s recordings: the error rate barely moves,
+        // but the frequency loop wanders at 8400 below 512.)
+        let block = match bit_rate as u32 {
+            0..1000 => 64,
+            1000..5000 => 128,
+            5000..9000 => 512,
+            _ => 256,
         };
         Self {
             modulation,

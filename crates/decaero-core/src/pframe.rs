@@ -250,8 +250,11 @@ pub struct PDecoder {
     recent: u64,
     locked: bool,
     confirmed: bool,
-    /// True when the demodulator's phase is turned half a circle.
-    inverted: bool,
+    /// Per rail (bit parity): true when that rail comes out upside down.
+    /// A-BPSK has one rail, so both entries agree.
+    inverted: [bool; 2],
+    /// Bits taken in so far (its low bit is the rail of the newest bit).
+    count: u64,
     /// Soft bits of the frame being collected (after the unique word).
     body: Vec<f32>,
     /// Bits of the next unique word seen so far while locked.
@@ -292,7 +295,8 @@ impl PDecoder {
             recent: 0,
             locked: false,
             confirmed: false,
-            inverted: false,
+            inverted: [false; 2],
+            count: 0,
             body: Vec::with_capacity(fmt.body_bits()),
             uw_seen: 0,
             bad_frames: 0,
@@ -320,8 +324,20 @@ impl PDecoder {
         self.stats
     }
 
-    fn uw_mismatch(&self) -> u32 {
-        ((self.recent ^ self.uw) & self.uw_mask).count_ones()
+    /// Unique-word bits that differ, for the rail of the newest bit and for
+    /// the other rail, and how many bits each rail has. With one rail the
+    /// two figures are the same.
+    fn uw_mismatch(&self) -> ([u32; 2], u32) {
+        let diff = (self.recent ^ self.uw) & self.uw_mask;
+        if self.fmt.uw_doubled {
+            let newest = 0x5555_5555_5555_5555u64;
+            (
+                [(diff & newest).count_ones(), (diff & !newest).count_ones()],
+                32,
+            )
+        } else {
+            ([diff.count_ones(); 2], 32)
+        }
     }
 
     fn drop_lock(&mut self) {
@@ -344,22 +360,25 @@ impl PDecoder {
 
     /// Feed soft bits (positive = 1); decoded frames are appended to `out`.
     pub fn push(&mut self, soft_bits: &[f32], out: &mut Vec<PFrame>) {
-        let uw_bits = self.fmt.uw_bits() as u32;
+        let rails = if self.fmt.uw_doubled { 2 } else { 1 };
         for &raw in soft_bits {
             self.recent = (self.recent << 1) | u64::from(raw > 0.0);
+            self.count += 1;
+            let rail = (self.count & 1) as usize;
             if !self.locked {
-                let miss = self.uw_mismatch();
-                let tol = acquire_tolerance(self.fmt.uw_bits());
-                if miss <= tol || miss >= uw_bits - tol {
+                let (miss, n) = self.uw_mismatch();
+                let tol = acquire_tolerance(32);
+                if miss.iter().all(|&m| m <= tol || m >= n - tol) {
                     self.locked = true;
                     self.confirmed = false;
-                    self.inverted = miss > tol;
+                    self.inverted[rail] = miss[0] > tol;
+                    self.inverted[1 - rail] = miss[1] > tol;
                     self.bad_frames = 0;
-                    self.pending_uw_errors = miss.min(uw_bits - miss);
+                    self.pending_uw_errors = miss[..rails].iter().map(|&m| m.min(n - m)).sum();
                 }
                 continue;
             }
-            let s = if self.inverted { -raw } else { raw };
+            let s = if self.inverted[rail] { -raw } else { raw };
             if !self.body_done {
                 self.body.push(s);
                 if self.body.len() == self.fmt.body_bits() {
@@ -376,15 +395,22 @@ impl PDecoder {
                 continue;
             }
             self.uw_seen = 0;
-            let mut miss = self.uw_mismatch();
-            if self.inverted {
-                miss = uw_bits - miss;
+            let (per_rail, n) = self.uw_mismatch();
+            let mut miss = 0;
+            for (k, &m) in per_rail[..rails].iter().enumerate() {
+                let r = if k == 0 { rail } else { 1 - rail };
+                let mut m = if self.inverted[r] { n - m } else { m };
+                if m > n * 3 / 4 {
+                    // The carrier slipped: carry on with this rail turned over.
+                    self.inverted[r] = !self.inverted[r];
+                    if rails == 1 {
+                        self.inverted[1 - r] = self.inverted[r];
+                    }
+                    m = n - m;
+                }
+                miss += m;
             }
-            if miss > uw_bits * 3 / 4 {
-                // The carrier loop slipped half a circle: carry on, turned over.
-                self.inverted = !self.inverted;
-                miss = uw_bits - miss;
-            }
+            let uw_bits = n * rails as u32;
             self.body_done = false;
             let good = self.last_good;
             let uw_fine = miss <= uw_bits / 4;

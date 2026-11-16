@@ -54,6 +54,20 @@ channels; kept outside the repo) decode through `decaero-core`: P 600 with
   drifts 18 Hz in a minute. It also holds two weak 10500 bit/s carriers;
   `areo2.wav` and `areo4.wav` each hold a weak 8400 bit/s voice carrier.
 - A-QPSK gives the same squared line pair, so one acquisition names all four rates.
+- Weak signal, measured: the two 10500 bit/s carriers in `areo.wav` sit at about
+  -2 to -3 dB Es/N0 (11 to 12 % raw bit errors) and still give 90 % and 79 % of
+  their signal units with a good CRC.
+- C channel: both of Rory's voice carriers are at 8 to 9 % raw bit errors, too
+  weak for the rate 2/3 code (it wants about 3 dB more), but frames lock and
+  sub-band call-progress units come through with good CRCs (`areo2.wav`:
+  aircraft 71BE46 via ground station 82). They are the weak-signal test for
+  voice; a strong call is still wanted.
+- JAERO's samples: `10.5k_sample` decodes 12480 of 12480 units;
+  `8400bps_ambe_sample` locks (181 of 219 sub-band units) and its voice frames
+  show a ringback cadence of tone frames. Tone frames are not synthesised yet
+  (mbelib gives silence for them): to do.
+- A demodulator block measured between 128 and 1024 bits makes no difference to
+  the error rate on these weak carriers: the limit is thermal, not tracking.
 - The input can be real IF (a receiver's audio output), so the front end
   takes real samples as well as IQ.
 
@@ -101,8 +115,8 @@ Square, redrawn at 60 frames a second, small dots.
 ## Milestones
 
 0. Repo, codec port, channel code primitives. **Done.**
-1. Frame codecs and the test modulator; P channel 600/1200 decoded from IQ. *P frame codec done and proven on real recordings with a numpy demodulator; the Rust demodulator is next.*
-2. A-QPSK: P 10500, C 8400 with voice out; check against JAERO's samples.
+1. Frame codecs and the test modulator; P channel 600/1200 decoded from IQ. **Done**: all 17 P channels of `areo.wav` decode in Rust.
+2. A-QPSK: P 10500, C 8400 with voice out; check against JAERO's samples. **Done in the bench receiver** (`cargo run --release -p decaero-dsp --example aerorx -- FILE.wav [--at HZ[:slow]] [--units]`); voice not yet heard on a strong call.
 3. R / T bursts.
 4. Engine, voice follow, Ogg Opus recording, call log.
 5. GUI (three columns).

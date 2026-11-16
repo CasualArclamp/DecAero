@@ -7,6 +7,7 @@
 //! names the bit rate of each from its squared-spectrum lines, and runs the
 //! demodulator and frame decoder on it. `--units` prints the signal units.
 
+use decaero_core::cframe::CDecoder;
 use decaero_core::pframe::{PDecoder, PFormat};
 use decaero_dsp::acquire;
 use decaero_dsp::ddc::Ddc;
@@ -70,6 +71,97 @@ fn carriers(samples: &[Complex32], rate: f64) -> Vec<(f64, f64, f32)> {
     out
 }
 
+/// An 8400 bit/s C channel: demodulate, decode the frames, turn the voice
+/// frames into audio and save it under `out/` as a WAV (8 kHz, 16 bit).
+fn voice_call(samples: &[Complex32], rate: f64, carrier: f64, path: &str) {
+    let mut ddc = Ddc::new(rate, carrier, Ddc::decimation_for(rate, 8400.0, 8.0));
+    let mut narrow = Vec::new();
+    ddc.process(samples, &mut narrow);
+    let mut demod = Demod::new(Modulation::for_rate(8400), 8400, ddc.out_rate(), 0.0);
+    let mut soft = Vec::new();
+    for piece in narrow.chunks(512) {
+        demod.process(piece, &mut soft);
+    }
+    let mut decoder = CDecoder::new();
+    let mut frames = Vec::new();
+    decoder.push(&soft, &mut frames);
+    let st = decoder.stats();
+    let ds = demod.status();
+    println!(
+        "  Es/N0 {:>4.1} dB  offset {:+.1} Hz  frames {:>3}  CRC {}/{}  pre-FEC BER {:.1e}  UW {}/{} wrong",
+        ds.es_n0_db,
+        ds.offset_hz,
+        st.frames,
+        st.crc_good,
+        st.crc_good + st.crc_bad,
+        st.channel_errors as f64 / st.channel_bits.max(1) as f64,
+        st.uw_bits_wrong,
+        st.uw_bits
+    );
+    let mut voice = decaero_ambe::Decoder::new();
+    let mut pcm: Vec<i16> = Vec::new();
+    let mut kinds = [0usize; 4];
+    let mut errs = [0usize; 8];
+    let mut timeline = String::new();
+    for f in &frames {
+        for u in f.units.iter().filter(|u| u.crc_ok && u.bytes[0] != 0x01) {
+            let hex: Vec<String> = u.bytes[..10].iter().map(|b| format!("{b:02X}")).collect();
+            println!("      sub-band {}", hex.join(" "));
+        }
+        for v in &f.voice {
+            let mut out = [0i16; decaero_ambe::FRAME_SAMPLES];
+            let info = voice.decode(v, &mut out);
+            kinds[info.kind as usize] += 1;
+            timeline.push(['V', 'r', '.', 'T'][info.kind as usize]);
+            errs[(info.total_errors as usize).min(7)] += 1;
+            pcm.extend_from_slice(&out);
+        }
+    }
+    if std::env::var("AERORX_TRACE").is_ok() {
+        // One letter per 20 ms: V voiced, r repeated, . silence, T tone.
+        for line in timeline.as_bytes().chunks(100) {
+            println!("      {}", String::from_utf8_lossy(line));
+        }
+    }
+    println!("      code-word corrections per voice frame (0..7+): {errs:?}");
+    println!(
+        "      voice frames: {} voiced, {} repeated, {} silent, {} tone",
+        kinds[0], kinds[1], kinds[2], kinds[3]
+    );
+    if pcm.is_empty() {
+        return;
+    }
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("call")
+        .trim()
+        .to_string();
+    let name = format!("out/{stem}_{carrier:.0}Hz.wav");
+    let _ = std::fs::create_dir_all("out");
+    let data = pcm.len() as u32 * 2;
+    let mut wav = Vec::with_capacity(44 + data as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    for s in &pcm {
+        wav.extend_from_slice(&s.to_le_bytes());
+    }
+    match std::fs::write(&name, wav) {
+        Ok(()) => println!("      audio: {name} ({:.1} s)", pcm.len() as f64 / 8000.0),
+        Err(e) => println!("      could not write {name}: {e}"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = args
@@ -85,7 +177,40 @@ fn main() {
         rate,
         if rec.real { " (real IF)" } else { "" }
     );
-    for (centre, width, peak) in carriers(&rec.samples, rate) {
+    // `--at HZ` skips the survey and looks for a wide carrier near HZ (for
+    // carriers too weak to stand out of the spectrum).
+    let forced: Vec<(f64, f64, f32)> = args
+        .windows(2)
+        .filter(|w| w[0] == "--at")
+        .filter_map(|w| {
+            // `HZ` for a fast carrier, `HZ:slow` for 600 or 1200 bit/s.
+            let (hz, slow) = match w[1].split_once(':') {
+                Some((hz, _)) => (hz, true),
+                None => (w[1].as_str(), false),
+            };
+            Some((hz.parse().ok()?, if slow { 1500.0 } else { 6000.0 }, 0.0))
+        })
+        .collect();
+    let list = if !forced.is_empty() {
+        forced
+    } else if rec.real {
+        // A receiver's audio: the passband is one lump in the spectrum, so
+        // look for the line pairs of every rate across the whole of it.
+        acquire::find(&rec.samples, rate, &[600, 1200, 8400, 10500], rate / 2.0)
+            .into_iter()
+            .filter(|f| f.strength >= 4.5 && f.offset_hz > 0.0)
+            .map(|f| {
+                (
+                    f.offset_hz,
+                    if f.bit_rate <= 1200 { 1500.0 } else { 6000.0 },
+                    0.0,
+                )
+            })
+            .collect()
+    } else {
+        carriers(&rec.samples, rate)
+    };
+    for (centre, width, peak) in list {
         if rec.real && centre < 0.0 {
             continue; // the mirror image of a real signal
         }
@@ -96,11 +221,14 @@ fn main() {
             &[8400, 10500, 1200]
         };
         let top = f64::from(*rates.iter().max().unwrap_or(&600));
-        let mut ddc = Ddc::new(rate, centre, Ddc::decimation_for(rate, top, 6.0));
+        let mut ddc = Ddc::new(rate, centre, Ddc::decimation_for(rate, top, 2.5));
         let mut wide = Vec::new();
         ddc.process(&rec.samples, &mut wide);
         let found = acquire::find(&wide, ddc.out_rate(), rates, width.max(600.0));
-        let Some(best) = found.first().filter(|f| f.strength >= 6.0) else {
+        if std::env::var("AERORX_TRACE").is_ok() {
+            eprintln!("{found:?}");
+        }
+        let Some(best) = found.first().filter(|f| f.strength >= 4.0) else {
             println!(
                 "{centre:>10.0} Hz  width {width:>5.0}  peak {peak:>4.1} dB  no Aero line pair"
             );
@@ -112,7 +240,7 @@ fn main() {
             best.bit_rate, best.strength
         );
         let Some(format) = PFormat::from_rate(best.bit_rate) else {
-            println!("  C channel (voice): decoder not written yet");
+            voice_call(&rec.samples, rate, carrier, path);
             continue;
         };
         let bit_rate = f64::from(best.bit_rate);
