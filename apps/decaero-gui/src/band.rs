@@ -124,7 +124,8 @@ impl Band {
         let rate = view.rate.max(1.0);
         if (self.span - rate).abs() > 1e-6 {
             self.span = rate;
-            self.lo = -rate / 2.0;
+            // A real input shows its upper half: the lower is its mirror.
+            self.lo = if view.real { 0.0 } else { -rate / 2.0 };
             self.hi = rate / 2.0;
             self.dirty = true;
         }
@@ -285,8 +286,8 @@ impl Band {
         let mut labels: Vec<(f32, String, Color32)> = Vec::new();
         for c in &view.channels {
             let width = match c.kind {
-                Kind::P(600) => 900.0,
-                Kind::P(1200) => 1700.0,
+                Kind::P(600) | Kind::Rt(600) => 900.0,
+                Kind::P(1200) | Kind::Rt(1200) => 1700.0,
                 Kind::Searching | Kind::NotAero => 1500.0,
                 _ => 7000.0,
             };
@@ -296,6 +297,7 @@ impl Band {
             let colour = match (c.kind, c.locked) {
                 _ if c.closed => FAINT,
                 (Kind::NotAero | Kind::Ended, _) => FAINT,
+                (Kind::Rt(_), _) => PINK,
                 (Kind::Searching, _) | (_, false) => ORANGE,
                 (Kind::C, true) if view.listening == Some(c.id) => GOOD,
                 (Kind::C, true) => VFO,
@@ -333,6 +335,14 @@ impl Band {
                     Kind::C => c.aes.map_or("C".to_string(), |a| format!("C {a:06X}")),
                     Kind::P(r) => format!(
                         "P{}",
+                        if r >= 10_000 {
+                            "10k".to_string()
+                        } else {
+                            r.to_string()
+                        }
+                    ),
+                    Kind::Rt(r) => format!(
+                        "R/T {}",
                         if r >= 10_000 {
                             "10k".to_string()
                         } else {

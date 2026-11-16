@@ -10,8 +10,10 @@
 use decaero_ambe::{Decoder as VoiceDecoder, FRAME_SAMPLES, FrameKind};
 use decaero_core::cframe::CDecoder;
 use decaero_core::pframe::{PDecoder, PFormat, SU_BYTES};
+use decaero_core::rtframe::{self, Burst, RReassembler};
 use decaero_core::su::{self, Acars, CAssignment, Meaning, Reassembler};
 use decaero_dsp::acquire;
+use decaero_dsp::burst::BurstReceiver;
 use decaero_dsp::ddc::Ddc;
 use decaero_dsp::demod::{Demod, Modulation};
 use num_complex::Complex32;
@@ -30,6 +32,8 @@ pub enum Kind {
     Searching,
     /// P channel at this bit rate.
     P(u32),
+    /// R and T channel bursts at this bit rate (aircraft to ground).
+    Rt(u32),
     /// C channel (voice) at 8400 bit/s.
     C,
     /// No Aero line pair found: the worker has stopped.
@@ -43,6 +47,7 @@ impl Kind {
         match self {
             Kind::Searching => "search".into(),
             Kind::P(r) => format!("P {r}"),
+            Kind::Rt(r) => format!("R/T {r}"),
             Kind::C => "C 8400".into(),
             Kind::NotAero => "not Aero".into(),
             Kind::Ended => "ended".into(),
@@ -103,6 +108,8 @@ pub struct ChannelStatus {
     pub last_unit: String,
     /// Peak of the decoded audio, 0 to 1.
     pub audio_level: f32,
+    /// R and T bursts decoded on this channel.
+    pub bursts: u64,
     /// The worker has stopped (the carrier went, or it was removed).
     pub closed: bool,
 }
@@ -139,6 +146,7 @@ impl ChannelStatus {
             history: VecDeque::new(),
             last_unit: String::new(),
             audio_level: 0.0,
+            bursts: 0,
             closed: false,
         }
     }
@@ -184,6 +192,16 @@ pub enum Event {
         bit_rate: u32,
         strength: f32,
     },
+    /// A line for the log that is none of the above (bursts).
+    Log {
+        channel: ChannelId,
+        kind: Kind,
+        seconds: f64,
+        aes: Option<u32>,
+        ges: Option<u8>,
+        title: String,
+        text: String,
+    },
     /// The worker has finished.
     Closed { channel: ChannelId },
 }
@@ -202,6 +220,9 @@ pub struct Request {
     /// Set when the deep scan has already named the bit rate and put
     /// `offset_hz` on the carrier: the worker starts decoding at once.
     pub known_rate: Option<u32>,
+    /// The user put this decoder here: it stays however quiet the channel is
+    /// (a burst channel can be silent for minutes).
+    pub persistent: bool,
 }
 
 /// Es/N0 (as a ratio) that gives raw bit error rate `p` on an antipodal signal.
@@ -243,7 +264,17 @@ enum Chain {
     },
 }
 
+/// Catches R and T bursts on a channel that carries no continuous P signal.
+struct BurstPath {
+    receiver: BurstReceiver,
+    bit_rate: u32,
+    r_data: RReassembler,
+    t_data: Reassembler,
+}
+
 struct Running {
+    /// The burst path, for the bit rates aircraft send bursts at.
+    bursts: Option<BurstPath>,
     ddc: Ddc,
     demod: Demod,
     chain: Chain,
@@ -283,6 +314,7 @@ pub fn run(
     let mut busy = 0.0f64;
     let mut last_second = seconds.floor();
     let mut quiet_since = seconds;
+    let mut bursts_seen = 0u64;
     let mut narrow = Vec::new();
     let mut soft = Vec::new();
 
@@ -364,8 +396,17 @@ pub fn run(
         }
         // A call that has gone is closed after a few seconds; a P channel is
         // given longer, it will be back.
-        let patience = if s.kind == Kind::C {
+        if s.bursts != bursts_seen {
+            bursts_seen = s.bursts;
+            quiet_since = seconds;
+        }
+        let patience = if req.persistent {
+            f64::MAX
+        } else if s.kind == Kind::C {
             5.0
+        } else if matches!(s.kind, Kind::Rt(_)) {
+            // Aircraft do not send all the time.
+            180.0
         } else if s.frames == 0 {
             // Nothing decoded yet: it was probably never a carrier.
             12.0
@@ -429,7 +470,14 @@ fn start_chain(
         s.carrier_hz = carrier;
         s.acquired_hz = carrier;
     }
+    let bursts = PFormat::from_rate(bit_rate).map(|_| BurstPath {
+        receiver: BurstReceiver::new(ddc.out_rate(), bit_rate),
+        bit_rate,
+        r_data: RReassembler::new(),
+        t_data: Reassembler::new(),
+    });
     Running {
+        bursts,
         ddc,
         demod,
         chain,
@@ -602,6 +650,100 @@ fn process(
             )
         }
     };
+    // Bursts, where there is no continuous signal holding the channel.
+    let mut burst_figures: Option<(f32, f32, Vec<Complex32>)> = None;
+    let mut bursts_decoded = 0u64;
+    if let Some(path) = r.bursts.as_mut().filter(|_| !locked) {
+        let mut found = Vec::new();
+        path.receiver.process(narrow, &mut found);
+        for b in found {
+            let Some(d) = rtframe::decode_burst(&b.soft, path.bit_rate > 5000) else {
+                continue;
+            };
+            bursts_decoded += 1;
+            let rt = Kind::Rt(path.bit_rate);
+            let quality = format!(
+                "Es/N0 {:.1} dB, pre-FEC BER {:.1e}",
+                b.es_n0_db,
+                d.pre_fec_ber()
+            );
+            burst_figures = Some((b.es_n0_db, d.pre_fec_ber(), b.scatter));
+            let log = |aes, ges, title: String, text: String| {
+                let _ = events.send(Event::Log {
+                    channel: id,
+                    kind: rt,
+                    seconds,
+                    aes,
+                    ges,
+                    title,
+                    text,
+                });
+            };
+            let message = |aes, ges, bytes: Vec<u8>| match su::acars(&bytes) {
+                Some(acars) => Event::Acars {
+                    channel: id,
+                    seconds,
+                    aes,
+                    ges,
+                    acars,
+                },
+                None => Event::Data {
+                    channel: id,
+                    seconds,
+                    aes,
+                    ges,
+                    bytes,
+                },
+            };
+            match &d.burst {
+                Burst::R { unit } => {
+                    let hex = unit
+                        .iter()
+                        .map(|x| format!("{x:02X}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    match rtframe::r_data(unit) {
+                        Some(h) => {
+                            aircraft = Some((h.aes, h.ges));
+                            log(
+                                Some(h.aes),
+                                Some(h.ges),
+                                format!("R burst: user data {} of {}", h.index + 1, h.total),
+                                format!("{hex}\n{quality}"),
+                            );
+                            if let Some((aes, ges, bytes)) = path.r_data.push(unit) {
+                                let _ = events.send(message(aes, ges, bytes));
+                            }
+                        }
+                        None => log(
+                            None,
+                            None,
+                            format!("R burst: {}", rtframe::r_name(unit[2])),
+                            format!("{hex}\n{quality}"),
+                        ),
+                    }
+                    last_unit = Some("R burst".to_string());
+                }
+                Burst::T { aes, ges, units } => {
+                    aircraft = Some((*aes, *ges));
+                    let good = units.iter().filter(|u| u.crc_ok).count();
+                    log(
+                        Some(*aes),
+                        Some(*ges),
+                        format!("T burst: {good} of {} units good", units.len()),
+                        quality.clone(),
+                    );
+                    for u in units.iter().filter(|u| u.crc_ok) {
+                        if let Some(data) = path.t_data.push(&u.bytes) {
+                            let _ = events.send(message(data.aes, data.ges, data.bytes));
+                        }
+                    }
+                    last_unit = Some("T burst".to_string());
+                }
+            }
+        }
+    }
+
     if frames > 0 {
         // About ten frames of memory.
         r.recent_errors = 0.9 * r.recent_errors + frame_errors as f32;
@@ -610,7 +752,10 @@ fn process(
 
     let ds = r.demod.status();
     let mut s = status.lock().unwrap();
-    s.kind = kind;
+    // A burst channel keeps its name between bursts.
+    if !(matches!(s.kind, Kind::Rt(_)) && !locked) {
+        s.kind = kind;
+    }
     s.locked = locked;
     s.coherence = ds.coherence;
     s.carrier_hz = s.acquired_hz + ds.offset_hz;
@@ -641,6 +786,26 @@ fn process(
         s.last_good_s = seconds;
         s.audio_level = audio_peak;
     }
+    if bursts_decoded > 0 {
+        s.bursts += bursts_decoded;
+        s.last_good_s = seconds;
+        if let Kind::P(rate) = kind
+            && s.frames == 0
+        {
+            // Bursts and never a continuous frame: an R/T channel.
+            s.kind = Kind::Rt(rate);
+        }
+    }
+    if let Some((es_n0_db, ber, scatter)) = burst_figures {
+        s.es_n0_db = es_n0_db;
+        s.eb_n0_db = es_n0_db + 3.0;
+        s.pre_fec_ber = ber;
+        s.fec_load = (ber / kind.ber_limit()).clamp(0.0, 1.0);
+        let limit = 10.0 * es_n0_for_ber(kind.ber_limit()).log10();
+        s.margin_db = es_n0_db - limit;
+        s.scatter = scatter;
+        return;
+    }
     if locked && r.recent_bits > 500.0 {
         let ber = (r.recent_errors / r.recent_bits).clamp(1e-5, 0.4);
         s.pre_fec_ber = ber;
@@ -668,7 +833,7 @@ fn process(
         s.eb_n0_db = 10.0 * (es / r.code_rate).log10();
         s.margin_db = 10.0 * (es / limit).log10();
         s.fec_load = (ber / kind.ber_limit()).clamp(0.0, 1.0);
-    } else if !locked {
+    } else if !locked && !matches!(s.kind, Kind::Rt(_)) {
         s.es_n0_db = ds.es_n0_db;
         s.eb_n0_db = ds.es_n0_db - 10.0 * r.code_rate.log10();
         s.margin_db = 0.0;

@@ -165,12 +165,24 @@ Square, redrawn at 60 frames a second, small dots.
     of a tag. `scripts/build-portable.ps1` does the same build into `exe\`.
     **Done.**
 
+12. R and T channel bursts. `decaero-core/src/rtframe.rs` (frames, R user
+    data), `decaero-dsp/src/burst.rs` (an energy detector, then the whole
+    burst demodulated at once: carrier from its own squared spectrum, one
+    timing offset, phase in short blocks). Every channel at 600, 1200 or
+    10500 bit/s also watches for bursts while it holds no continuous signal,
+    and shows as R/T once one decodes; a decoder placed by hand stays however
+    quiet the channel is. On JAERO's samples: both 1200 bit/s files decode
+    (four T bursts, 39 of 40 units) and the 10.5k file gives seven complete
+    downlink ACARS / ADS-C messages. **R bursts have decoded only from the
+    synthetic test**: none in JAERO's (MP3-coded) 10.5k sample decoded, and
+    several of its weaker T bursts do not either. No C-band recording of
+    Rory's has been tried.
+13. A real-IF input shows and uses its upper half only (the lower is its mirror).
+
 Still to do, roughly in this order:
 
-- R and T channel bursts (C-band side).
 - Tone frames synthesised (ringback is silent now).
 - JAERO-style ACARS / ADS-C feeds out (JSON over UDP, SBS).
 - Channel activity history (the heat map), kept across restarts; call log file.
 - decsat-server's compressed link as an input; a prefs file.
-- Real IF input: hide the mirror half of the band.
 - A test modulator crate, so the sensitivity figures are regression tests.

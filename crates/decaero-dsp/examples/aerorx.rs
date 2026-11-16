@@ -162,6 +162,69 @@ fn voice_call(samples: &[Complex32], rate: f64, carrier: f64, path: &str) {
     }
 }
 
+/// `--burst RATE --at HZ`: watch one channel for R and T bursts.
+fn bursts(samples: &[Complex32], rate: f64, carrier: f64, bit_rate: u32) {
+    use decaero_core::rtframe::{self, Burst};
+    let mut ddc = Ddc::new(
+        rate,
+        carrier,
+        Ddc::decimation_for(rate, f64::from(bit_rate), 8.0),
+    );
+    let mut narrow = Vec::new();
+    ddc.process(samples, &mut narrow);
+    let mut rx = decaero_dsp::burst::BurstReceiver::new(ddc.out_rate(), bit_rate);
+    let mut found = Vec::new();
+    for piece in narrow.chunks(512) {
+        rx.process(piece, &mut found);
+    }
+    println!(
+        "{} bursts at {bit_rate} bit/s near {carrier:.0} Hz",
+        found.len()
+    );
+    for b in &found {
+        print!(
+            "  {:5.2} s  {:+7.1} Hz  Es/N0 {:4.1} dB  ",
+            b.seconds, b.offset_hz, b.es_n0_db
+        );
+        match rtframe::decode_burst(&b.soft, bit_rate > 5000) {
+            None => println!("not decoded ({} bits)", b.soft.len()),
+            Some(d) => {
+                let quality = format!(
+                    "pre-FEC BER {:.1e}  UW {} wrong",
+                    d.pre_fec_ber(),
+                    d.uw_errors
+                );
+                match &d.burst {
+                    Burst::R { unit } => {
+                        let hex: Vec<String> = unit.iter().map(|x| format!("{x:02X}")).collect();
+                        let what = match rtframe::r_data(unit) {
+                            Some(h) => format!(
+                                "user data {} of {} from {:06X}",
+                                h.index + 1,
+                                h.total,
+                                h.aes
+                            ),
+                            None => rtframe::r_name(unit[2]).to_string(),
+                        };
+                        println!(
+                            "R  {quality}  {what}
+      {}",
+                            hex.join(" ")
+                        );
+                    }
+                    Burst::T { aes, ges, units } => {
+                        let good = units.iter().filter(|u| u.crc_ok).count();
+                        println!(
+                            "T  {quality}  from {aes:06X} to GES {ges:02X}, {good} of {} units good",
+                            units.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = args
@@ -210,6 +273,17 @@ fn main() {
     } else {
         carriers(&rec.samples, rate)
     };
+    // `--burst RATE` with `--at HZ`: the channel is watched for bursts.
+    let burst_rate: Option<u32> = args
+        .windows(2)
+        .find(|w| w[0] == "--burst")
+        .and_then(|w| w[1].parse().ok());
+    if let Some(bit_rate) = burst_rate {
+        for (centre, _, _) in &list {
+            bursts(&rec.samples, rate, *centre, bit_rate);
+        }
+        return;
+    }
     for (centre, width, peak) in list {
         if rec.real && centre < 0.0 {
             continue; // the mirror image of a real signal

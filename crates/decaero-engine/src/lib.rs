@@ -38,6 +38,11 @@ pub trait Source: Send {
     fn live(&self) -> bool {
         false
     }
+    /// One real signal rather than I and Q (a receiver's audio): the lower
+    /// half of the band is then only the mirror image of the upper.
+    fn real(&self) -> bool {
+        false
+    }
     /// Tune a radio to a new centre frequency (nothing for a recording).
     fn tune(&mut self, _center_hz: f64) {}
 }
@@ -49,6 +54,7 @@ pub struct FileSource {
     samples: Vec<Complex32>,
     pos: usize,
     pub repeat: bool,
+    real: bool,
 }
 
 impl FileSource {
@@ -62,6 +68,7 @@ impl FileSource {
         Ok(Self {
             name,
             rate: rec.sample_rate,
+            real: rec.real,
             samples: rec.samples,
             pos: 0,
             repeat,
@@ -87,6 +94,9 @@ impl Source for FileSource {
     }
     fn describe(&self) -> String {
         format!("{} · {:.0} kS/s", self.name, self.rate / 1e3)
+    }
+    fn real(&self) -> bool {
+        self.real
     }
 }
 
@@ -166,6 +176,8 @@ pub struct View {
     /// Front end load, share of one core.
     pub load: f32,
     pub listening: Option<ChannelId>,
+    /// The input is one real signal: only the upper half of the band counts.
+    pub real: bool,
 }
 
 pub enum Command {
@@ -355,6 +367,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     let mut load = 0f32;
     let samples_seen = Arc::new(AtomicU64::new(0));
 
+    let mirror_below = source.real();
+    let by_hand = std::cell::Cell::new(false);
     let spawn = |workers: &mut Vec<Worker>,
                  next_id: &mut ChannelId,
                  offset_hz: f64,
@@ -362,6 +376,11 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                  rates: Vec<u32>,
                  seconds: f64,
                  known_rate: Option<u32>| {
+        // The lower half of a real input is the upper half again, backwards.
+        if mirror_below && offset_hz < 0.0 {
+            by_hand.set(false);
+            return 0;
+        }
         let id = *next_id;
         *next_id += 1;
         let (tx, rx) = mpsc::sync_channel(64);
@@ -375,6 +394,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             search_hz: (width_hz * 0.75).max(700.0),
             started_s: seconds,
             known_rate,
+            // Set just before a decoder the user placed is started.
+            persistent: by_hand.replace(false),
         };
         let (st, ev, sp, seen) = (
             status.clone(),
@@ -420,6 +441,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 } => {
                     // A narrow box can only hold a slow carrier; a wide one
                     // may hold anything, the fast rates being likeliest.
+                    by_hand.set(true);
                     let width = width_hz.clamp(1000.0, 40_000.0);
                     let rates = if width < 2500.0 {
                         vec![600, 1200]
@@ -568,6 +590,9 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         // Voice follow, part three: what the deep scan found under the noise.
         if options.follow {
             for (offset, bit_rate) in finds {
+                // A find in the mirror half of a real input is the carrier
+                // at the same distance above the centre.
+                let offset = if mirror_below { offset.abs() } else { offset };
                 let wide = bit_rate > 1200;
                 let reach = if wide { 4000.0 } else { 900.0 };
                 // Two carriers squared together leave a line pair half way
@@ -741,6 +766,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             v.dropped_blocks = dropped;
             v.load = load;
             v.listening = listening;
+            v.real = mirror_below;
             // A live source says here when its link has gone.
             if source.live() {
                 v.source = source.describe();
@@ -985,6 +1011,15 @@ fn drain_events(
                 bit_rate,
                 ..
             } => finds.push((offset_hz, bit_rate)),
+            Event::Log {
+                channel,
+                kind,
+                seconds,
+                aes,
+                ges,
+                title,
+                text,
+            } => line(seconds, channel, kind, aes, ges, title, text, false),
             Event::Closed { channel } => {
                 if let Some(c) = calls
                     .iter_mut()

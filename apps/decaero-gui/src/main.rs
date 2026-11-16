@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--add HZ:WIDTH] [--out-dir DIR]`
 
 mod aircraft;
 mod audio;
@@ -576,7 +576,7 @@ impl App {
                             if ui.selectable_label(listening, mode).clicked() && c.kind == Kind::C {
                                 listen = Some(if listening { None } else { Some(c.id) });
                             }
-                            if c.locked {
+                            if has_figures(c) {
                                 ui.label(format!("{:.1}", c.eb_n0_db));
                                 load_bar(ui, c.fec_load, 46.0);
                             } else {
@@ -642,7 +642,7 @@ impl App {
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("Margin").color(DIM));
-            if c.locked {
+            if has_figures(c) {
                 let colour = margin_colour(c.margin_db);
                 ui.label(
                     RichText::new(format!("{:+.1} dB", c.margin_db))
@@ -723,6 +723,7 @@ impl App {
                     format!("{} · {} lock losses", c.frames, c.lock_losses),
                     None,
                 ),
+                ("Bursts", format!("{} decoded", c.bursts), None),
             ],
         );
         if c.kind == Kind::C {
@@ -1088,11 +1089,18 @@ fn clock(seconds: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// A channel whose quality figures mean something: a locked one, or a burst
+/// channel that has decoded a burst.
+fn has_figures(c: &ChannelStatus) -> bool {
+    c.locked || (matches!(c.kind, Kind::Rt(_)) && c.bursts > 0)
+}
+
 fn tag(c: &ChannelStatus) -> (&'static str, Color32) {
     match (c.kind, c.locked) {
         (Kind::NotAero, _) => ("no", DIM),
         _ if c.closed => ("end", DIM),
         (Kind::Ended, _) => ("end", DIM),
+        (Kind::Rt(_), _) => ("R/T", PINK),
         (Kind::Searching, _) => ("?", ORANGE),
         (_, false) => ("srch", ORANGE),
         (Kind::C, true) => ("C", GOOD),
@@ -1218,7 +1226,7 @@ fn margin_bar(ui: &Ui, rect: egui::Rect, c: &ChannelStatus) {
             FAINT,
         );
     }
-    if c.locked {
+    if has_figures(c) {
         let at = y(c.margin_db);
         p.line_segment(
             [pos2(rect.left(), at), pos2(rect.right(), at)],
@@ -1325,6 +1333,7 @@ fn main() -> eframe::Result {
     let mut radio_key: Option<String> = None;
     let mut rate_given = false;
     let mut bias_arg = false;
+    let mut adds: Vec<(f64, f64)> = Vec::new();
     let mut net_rate = 625_000.0f64;
     let mut net_format = net::Format::I16;
     while let Some(a) = args.next() {
@@ -1343,6 +1352,14 @@ fn main() -> eframe::Result {
             }
             "--radio" => radio_key = args.next(),
             "--bias-tee" => bias_arg = true,
+            // A decoder placed by hand, as a drag on the band: HZ:WIDTH.
+            "--add" => {
+                if let Some((hz, width)) = args.next().as_deref().and_then(|a| a.split_once(':'))
+                    && let (Ok(offset_hz), Ok(width_hz)) = (hz.parse::<f64>(), width.parse::<f64>())
+                {
+                    adds.push((offset_hz, width_hz));
+                }
+            }
             "--iq" => {
                 net_format = args
                     .next()
@@ -1448,6 +1465,12 @@ fn main() -> eframe::Result {
                     }
                     None => app.error = Some(format!("no radio called {key}")),
                 }
+            }
+            for (offset_hz, width_hz) in &adds {
+                app.send(Command::Add {
+                    offset_hz: *offset_hz,
+                    width_hz: *width_hz,
+                });
             }
             Ok(Box::new(app))
         }),

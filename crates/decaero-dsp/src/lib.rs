@@ -3,6 +3,7 @@
 //! and the weak-signal demodulator for both modulations.
 
 pub mod acquire;
+pub mod burst;
 pub mod ddc;
 pub mod demod;
 pub mod simd;

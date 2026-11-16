@@ -100,7 +100,7 @@ pub struct Demod {
     m4: f32,
 }
 
-fn rrc(sps: f64, alpha: f64, span: usize) -> Vec<f32> {
+pub(crate) fn rrc(sps: f64, alpha: f64, span: usize) -> Vec<f32> {
     let n = (span as f64 * sps).round() as usize | 1;
     let mid = (n / 2) as f64;
     (0..n)

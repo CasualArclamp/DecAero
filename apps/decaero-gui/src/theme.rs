@@ -28,6 +28,8 @@ pub const GREEN_STRIP: Color32 = Color32::from_rgb(47, 107, 57);
 /// The first VFO colour and the constellation dots.
 pub const VFO: Color32 = Color32::from_rgb(80, 200, 255);
 pub const DOT: Color32 = Color32::from_rgb(120, 200, 255);
+/// Burst channels (DecSAT's fourth VFO colour).
+pub const PINK: Color32 = Color32::from_rgb(240, 110, 200);
 pub const TRACE: Color32 = Color32::from_rgb(150, 205, 255);
 
 pub fn apply(ctx: &egui::Context) {
