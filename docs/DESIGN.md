@@ -115,10 +115,21 @@ Square, redrawn at 60 frames a second, small dots.
 ## Milestones
 
 0. Repo, codec port, channel code primitives. **Done.**
-1. Frame codecs and the test modulator; P channel 600/1200 decoded from IQ. **Done**: all 17 P channels of `areo.wav` decode in Rust.
-2. A-QPSK: P 10500, C 8400 with voice out; check against JAERO's samples. **Done in the bench receiver** (`cargo run --release -p decaero-dsp --example aerorx -- FILE.wav [--at HZ[:slow]] [--units]`); voice not yet heard on a strong call.
-3. R / T bursts.
-4. Engine, voice follow, Ogg Opus recording, call log.
-5. GUI (three columns).
-6. ACARS / ADS-C feeds, aircraft lookup, activity history.
-7. Network inputs: SDR++ server, decsat-server; CI and portable exes.
+1. Frame codecs; P channel 600/1200 decoded from IQ. **Done.**
+2. A-QPSK: P 10500, C 8400 with voice out; JAERO's samples. **Done**; voice not yet heard on a strong call.
+3. Engine: a worker per carrier, carrier survey, deep scan, voice follow from P
+   channel assignments, calls, message log. **Done.**
+4. GUI, three columns. **Done** (`cargo run --release -p decaero-gui -- FILE.wav --center MHZ`).
+5. Call recording to Ogg Opus. **Done** (Documents\DecAero\calls, or `--out-dir`).
+
+Still to do, roughly in this order:
+
+- R and T channel bursts (C-band side).
+- Tone frames synthesised (ringback is silent now).
+- Aircraft lookup from a downloaded database, the US / military filters.
+- JAERO-style ACARS / ADS-C feeds out (JSON over UDP, SBS).
+- Channel activity history (the heat map), kept across restarts; call log file.
+- Live inputs: SDR++ server, plain TCP/UDP IQ, decsat-server; prefs file.
+- Real IF input: hide the mirror half of the band.
+- CI on Actions and the portable exe (no console window).
+- A test modulator crate, so the sensitivity figures are regression tests.

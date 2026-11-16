@@ -309,7 +309,14 @@ impl AudioTap {
 fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shared>) {
     let rate = source.rate();
     let block_len = (rate / 20.0) as usize;
-    let n = options.fft_size.next_power_of_two().max(256);
+    // No longer than about two blocks, so a narrow input (a receiver's audio)
+    // still gets several waterfall rows a second.
+    let n = options
+        .fft_size
+        .next_power_of_two()
+        .min(block_len.next_power_of_two())
+        .max(256);
+    let mut fft_in: Vec<Complex32> = Vec::new();
     let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
     let window: Vec<f32> = (0..n)
         .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
@@ -471,7 +478,9 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         // One waterfall row per block: the block's segments averaged.
         let mut power = vec![0f32; n];
         let mut segments = 0;
-        for seg in block.chunks_exact(n) {
+        fft_in.extend_from_slice(&block);
+        let whole = fft_in.len() / n * n;
+        for seg in fft_in[..whole].chunks_exact(n) {
             for ((b, &s), &w) in buf.iter_mut().zip(seg).zip(&window) {
                 *b = s * w;
             }
@@ -481,6 +490,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             }
             segments += 1;
         }
+        fft_in.drain(..whole);
         if segments > 0 {
             let scale = 1.0 / (segments as f32 * n as f32 * n as f32 * 0.375);
             let row: Vec<f32> = (0..n)
@@ -541,9 +551,18 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             for (offset, bit_rate) in finds {
                 let wide = bit_rate > 1200;
                 let reach = if wide { 4000.0 } else { 900.0 };
-                let busy = workers
-                    .iter()
-                    .any(|w| !w.closed && (w.offset_hz - offset).abs() < reach + w.width_hz / 2.0);
+                // A decoder still searching here gives way: the scan knows
+                // what the carrier is.
+                let mut busy = false;
+                for w in workers.iter().filter(|w| !w.closed) {
+                    if (w.offset_hz - offset).abs() < reach + w.width_hz / 2.0 {
+                        if w.status.lock().unwrap().kind == Kind::Searching {
+                            w.stop.store(true, Ordering::Relaxed);
+                        } else {
+                            busy = true;
+                        }
+                    }
+                }
                 // The survey's verdict does not count here: it gives up on a
                 // weak carrier that the scan can still name.
                 if busy
@@ -603,11 +622,12 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     {
                         continue;
                     }
-                    let rates = if c.width_hz < 2200.0 {
-                        vec![600, 1200]
-                    } else {
-                        vec![8400, 10500, 1200]
-                    };
+                    // Wide carriers are left to the deep scan, which names a
+                    // weak one far more surely than a short look here can.
+                    if c.width_hz >= 2200.0 {
+                        continue;
+                    }
+                    let rates = vec![600, 1200];
                     spawn(
                         &mut workers,
                         &mut next_id,
@@ -643,7 +663,11 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 return false;
             }
             if s.frames == 0 {
-                scan_rejected.push((w.offset_hz, now));
+                // Named by the scan but never decoded: leave it a minute. A
+                // search that was stopped to make way is simply dropped.
+                if s.kind != Kind::Ended {
+                    scan_rejected.push((w.offset_hz, now));
+                }
                 return false;
             }
             now - s.last_good_s < 20.0

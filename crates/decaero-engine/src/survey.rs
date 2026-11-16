@@ -37,7 +37,12 @@ pub fn carriers(spectrum_db: &[f32], rate: f64, min_db: f32) -> Survey {
         .collect();
     let mut sorted = smooth.clone();
     sorted.sort_by(f32::total_cmp);
-    let floor_db = sorted[n * 3 / 10];
+    // The floor is a low percentile of the passband only: a filtered input (a
+    // receiver's audio, a decimated SDR) has dead edges far below the noise,
+    // which must not count.
+    let cut = sorted[n * 9 / 10] - 15.0;
+    let live = sorted.partition_point(|&v| v < cut);
+    let floor_db = sorted[live + (n - live) * 3 / 10];
     let above = |i: usize| i < n && smooth[i] > floor_db + min_db;
     // Bridge gaps up to 100 Hz inside a carrier.
     let gap = ((100.0 / bin_hz).round() as usize).max(1);

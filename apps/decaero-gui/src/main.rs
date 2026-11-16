@@ -7,10 +7,11 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ]`
+//! `decaero-gui [FILE.wav] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
 
 mod audio;
 mod band;
+mod recorder;
 mod theme;
 
 use decaero_engine::channel::{ChannelId, ChannelStatus, Kind};
@@ -57,6 +58,8 @@ struct App {
     paused: bool,
     volume: f32,
     audio: Option<audio::Output>,
+    /// Saves each call as Ogg Opus; `None` on unattended runs.
+    recorder: Option<recorder::Recorder>,
     trail: VecDeque<Complex32>,
     trail_of: Option<ChannelId>,
     last_scatter: Vec<Complex32>,
@@ -121,8 +124,27 @@ impl App {
         while self.log.len() > 3000 {
             self.log.pop_front();
         }
-        // Voice for the recorder is not kept yet: drop it so it does not pile up.
-        let _ = engine.take_recorded();
+        // Every call goes to its own Ogg Opus file.
+        let voice = engine.take_recorded();
+        if let Some(rec) = &mut self.recorder {
+            for (channel, pcm) in &voice {
+                let hz = self
+                    .view
+                    .channels
+                    .iter()
+                    .find(|c| c.id == *channel)
+                    .map_or(0.0, |c| c.carrier_hz);
+                rec.feed(*channel, hz, pcm);
+            }
+            let ended: Vec<_> = self
+                .view
+                .calls
+                .iter()
+                .filter(|c| c.end_s.is_some())
+                .map(|c| (c.channel, c.aes))
+                .collect();
+            rec.tidy(&ended);
+        }
 
         // Keep a selection: the one asked for on the command line, else the
         // call being listened to, else the first channel.
@@ -270,6 +292,18 @@ impl App {
                 format!("{calls} calls"),
                 format!("CPU {:.0}% of a core", cpu * 100.0),
                 format!("{} blocks lost", v.dropped_blocks),
+                match &self.recorder {
+                    Some(r) if r.open_calls() > 0 => format!(
+                        "recording {} call(s) to {}",
+                        r.open_calls(),
+                        r.dir().display()
+                    ),
+                    Some(r) => r.error.clone().unwrap_or_else(|| match &r.last {
+                        Some(p) => format!("last call saved: {}", p.display()),
+                        None => format!("calls are saved to {}", r.dir().display()),
+                    }),
+                    None => "not recording".to_string(),
+                },
             ] {
                 ui.label(RichText::new(part).color(DIM));
                 ui.separator();
@@ -940,6 +974,7 @@ fn main() -> eframe::Result {
     let mut shot_path = None;
     let mut after = 8.0;
     let mut select_hz = None;
+    let mut out_dir = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--center" => center_text = args.next().unwrap_or_default(),
@@ -947,6 +982,7 @@ fn main() -> eframe::Result {
             "--screenshot" => shot_path = args.next().map(PathBuf::from),
             "--after" => after = args.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
+            "--out-dir" => out_dir = args.next().map(PathBuf::from),
             _ => file = Some(PathBuf::from(a)),
         }
     }
@@ -986,6 +1022,14 @@ fn main() -> eframe::Result {
                 paused: false,
                 volume: 0.7,
                 audio,
+                // An unattended run records only where it was told to.
+                recorder: match (&out_dir, shot_path.is_some()) {
+                    (Some(dir), _) => Some(recorder::Recorder::new(dir.clone())),
+                    (None, false) => {
+                        Some(recorder::Recorder::new(recorder::Recorder::default_dir()))
+                    }
+                    (None, true) => None,
+                },
                 trail: VecDeque::new(),
                 trail_of: None,
                 last_scatter: Vec::new(),
