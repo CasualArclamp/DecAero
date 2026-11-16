@@ -75,6 +75,8 @@ fn stage(name: &str, min: f64, max: f64, step: f64, value: f64) -> Gain {
 }
 
 /// Every radio this build can drive. Listing them touches no hardware.
+// Each push is behind its own feature, so this cannot be one `vec![]`.
+#[allow(clippy::vec_init_then_push)]
 pub fn list() -> Vec<RadioInfo> {
     #[allow(unused_mut)]
     let mut v: Vec<RadioInfo> = Vec::new();
