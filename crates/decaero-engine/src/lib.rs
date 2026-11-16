@@ -13,6 +13,7 @@ pub mod feed;
 pub mod net;
 pub mod scanner;
 pub mod survey;
+pub mod zoom;
 
 use channel::{ChannelId, ChannelStatus, Event, Kind, Request};
 use num_complex::Complex32;
@@ -188,6 +189,17 @@ pub struct View {
     pub real: bool,
     /// How the feeds out are doing.
     pub feeds: feed::FeedCounts,
+    /// The averaged spectrum again, finer, for the part of the band on
+    /// screen when that is zoomed in past `spectrum_db`'s bins.
+    pub zoom: Option<zoom::ZoomRow>,
+}
+
+/// One row of the waterfall: the whole band (dB, lowest frequency first)
+/// and, zoomed in, the part on screen again at a finer resolution.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub db: Vec<f32>,
+    pub zoom: Option<zoom::ZoomRow>,
 }
 
 pub enum Command {
@@ -205,6 +217,14 @@ pub enum Command {
     SetCenter(f64),
     /// Change where the feeds go.
     Feeds(feed::FeedOptions),
+    /// What the window shows: this part of the band (Hz from the centre)
+    /// across this many screen pixels. The engine makes a finer spectrum of
+    /// it when the band's own bins are wider than a pixel.
+    Show {
+        lo_hz: f64,
+        hi_hz: f64,
+        pixels: usize,
+    },
 }
 
 struct Worker {
@@ -220,7 +240,7 @@ struct Worker {
 
 struct Shared {
     view: Mutex<View>,
-    rows: Mutex<VecDeque<(u64, Vec<f32>)>>,
+    rows: Mutex<VecDeque<(u64, Row)>>,
     log: Mutex<VecDeque<LogLine>>,
     commands: Mutex<Vec<Command>>,
     /// Decoded audio of the channel being listened to, 8 kHz.
@@ -267,7 +287,7 @@ impl Engine {
     }
 
     /// Waterfall rows newer than `after` (dB, lowest frequency first).
-    pub fn rows_after(&self, after: u64) -> Vec<(u64, Vec<f32>)> {
+    pub fn rows_after(&self, after: u64) -> Vec<(u64, Row)> {
         self.shared
             .rows
             .lock()
@@ -358,6 +378,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     let mut buf = vec![Complex32::default(); n];
     let mut average = vec![0f32; n];
     let mut have_average = false;
+    // The part of the band on screen, and the finer spectrum of it.
+    let mut shown: Option<(f64, f64, usize)> = None;
+    let mut zoom: Option<zoom::Zoom> = None;
+    let base_s = n as f64 / rate;
 
     let (event_tx, event_rx) = mpsc::channel::<Event>();
     let mut workers: Vec<Worker> = Vec::new();
@@ -499,6 +523,11 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 Command::Scan(on) => scan = on,
                 Command::Follow(on) => options.follow = on,
                 Command::Pause(on) => paused = on,
+                Command::Show {
+                    lo_hz,
+                    hi_hz,
+                    pixels,
+                } => shown = Some((lo_hz, hi_hz, pixels.max(1))),
                 Command::SetCenter(hz) => {
                     options.center_hz = hz;
                     source.tune(hz);
@@ -551,6 +580,28 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         // than that. Shorter ones are averaged over the step.
         fft_in.extend_from_slice(&block);
         let step = (block_len / ROWS_PER_BLOCK).max(1);
+        // Zoomed in past the band's own bins (a pixel is narrower than one):
+        // a finer spectrum of the view. The stretch transformed grows as the
+        // square root of the zoom, from the band's own length at the point
+        // where a pixel is one bin: finer bins come at the price of slower
+        // ones, and this keeps a bin about as wide on screen as it is tall.
+        // One that still serves the view is kept, so its samples are not
+        // thrown away by every small move.
+        let fine_s = shown
+            .map(|(lo, hi, pixels)| (base_s * pixels as f64 / (hi - lo).max(1.0)).sqrt())
+            .filter(|s| *s > base_s * 1.25);
+        match (fine_s, shown) {
+            (Some(_), Some((lo, hi, _))) => {
+                if !zoom.as_ref().is_some_and(|z| z.fits(lo, hi)) {
+                    zoom = zoom::Zoom::new(rate, lo, hi);
+                }
+            }
+            _ => zoom = None,
+        }
+        if let Some(z) = &mut zoom {
+            z.feed(&block);
+        }
+        let mut rows_made = 0;
         let segments = (step / n).max(1);
         while fft_in.len() >= segments * n {
             let mut power = vec![0f32; n];
@@ -576,6 +627,18 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 average.clone_from(&row);
                 have_average = true;
             }
+            // The finer row ends where this one does: the block's rows are
+            // a third of a block apart.
+            let back_s = (ROWS_PER_BLOCK - 1).saturating_sub(rows_made) as f64 * step as f64 / rate;
+            rows_made += 1;
+            let fine = match (&mut zoom, fine_s) {
+                (Some(z), Some(s)) => z.row(back_s, s, base_s),
+                _ => None,
+            };
+            let row = Row {
+                db: row,
+                zoom: fine,
+            };
             row_seq += 1;
             let mut rows = shared.rows.lock().unwrap();
             rows.push_back((row_seq, row));
@@ -801,6 +864,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         {
             let mut v = shared.view.lock().unwrap();
             v.spectrum_db.clone_from(&average);
+            v.zoom = zoom.as_ref().and_then(|z| z.average().cloned());
             v.row_seq = row_seq;
             v.seconds = seconds;
             v.paused = false;

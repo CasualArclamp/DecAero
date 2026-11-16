@@ -6,8 +6,9 @@
 //! middle-drag pans. Left-drag draws the box of a new decoder.
 
 use crate::theme::*;
-use decaero_engine::View;
 use decaero_engine::channel::{ChannelId, Kind};
+use decaero_engine::zoom::ZoomRow;
+use decaero_engine::{Row, View};
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CursorIcon, FontId, PointerButton, Stroke, TextureHandle,
     TextureOptions, TextureWrapMode, Ui, pos2, vec2,
@@ -45,7 +46,7 @@ pub enum Action {
 pub struct Band {
     /// History at full resolution, newest first, each with the noise floor
     /// it was taken at: zooming in redraws from these, so it stays sharp.
-    rows: VecDeque<(f32, Vec<f32>)>,
+    rows: VecDeque<(f32, Row)>,
     /// Columns of the texture (one a screen pixel, so nothing is resampled)
     /// and rows on screen.
     size: [usize; 2],
@@ -74,6 +75,9 @@ pub struct Band {
     drag_from: Option<f64>,
     /// A view asked for on the command line, taken once the input is known.
     pub want_view: Option<(f64, f64)>,
+    /// What is on screen (Hz from the centre, and screen pixels across),
+    /// for the engine: it makes a finer spectrum of it when zoomed in.
+    pub shown: Option<(f64, f64, usize)>,
 }
 
 /// How one column of the picture is read from a row of bins.
@@ -90,20 +94,36 @@ enum Column {
 /// The columns for `cols` across the part of a row of `n` bins between the
 /// fractions `from` and `to` of its length.
 fn plan(n: usize, cols: usize, from: f64, to: f64) -> Vec<Column> {
+    (0..cols).map(|c| column(n, cols, from, to, c)).collect()
+}
+
+/// Column `c` of `plan`.
+fn column(n: usize, cols: usize, from: f64, to: f64, c: usize) -> Column {
     let per_col = (to - from) * n as f64 / cols as f64;
+    if per_col < 1.0 {
+        // The column's middle, counted in bins from the first bin's middle.
+        let at = ((from * n as f64 + (c as f64 + 0.5) * per_col) - 0.5).clamp(0.0, (n - 1) as f64);
+        let a = at as usize;
+        Column::Between(a, (a + 1).min(n - 1), (at - a as f64) as f32)
+    } else {
+        let a = ((from * n as f64 + c as f64 * per_col).max(0.0) as usize).min(n - 1);
+        let b = (from * n as f64 + (c + 1) as f64 * per_col).ceil().max(0.0) as usize;
+        Column::Peak(a, b.clamp(a + 1, n))
+    }
+}
+
+/// The columns of the view `lo..hi` (Hz) that a finer row covers, and how
+/// each is read from it; `None` where the view runs past the row.
+fn overlay(zoom: &ZoomRow, cols: usize, lo: f64, hi: f64) -> Vec<Option<Column>> {
+    let n = zoom.db.len();
+    // The row as a stretch of bins, each `step_hz` wide about its own middle.
+    let left = zoom.lo_hz - zoom.step_hz / 2.0;
+    let width = zoom.step_hz * n as f64;
+    let (from, to) = ((lo - left) / width, (hi - left) / width);
     (0..cols)
         .map(|c| {
-            if per_col < 1.0 {
-                // The column's middle, counted in bins from the first bin's middle.
-                let at = ((from * n as f64 + (c as f64 + 0.5) * per_col) - 0.5)
-                    .clamp(0.0, (n - 1) as f64);
-                let a = at as usize;
-                Column::Between(a, (a + 1).min(n - 1), (at - a as f64) as f32)
-            } else {
-                let a = ((from * n as f64 + c as f64 * per_col) as usize).min(n - 1);
-                let b = (from * n as f64 + (c + 1) as f64 * per_col).ceil() as usize;
-                Column::Peak(a, b.clamp(a + 1, n))
-            }
+            let middle = from + (to - from) * (c as f64 + 0.5) / cols as f64;
+            (n > 1 && (0.0..1.0).contains(&middle)).then(|| column(n, cols, from, to, c))
         })
         .collect()
 }
@@ -152,6 +172,7 @@ impl Band {
             span: 1.0,
             drag_from: None,
             want_view: None,
+            shown: None,
         }
     }
 
@@ -161,8 +182,8 @@ impl Band {
         self.dirty = true;
     }
 
-    pub fn push_rows(&mut self, rows: impl Iterator<Item = Vec<f32>>, floor_db: f32) {
-        for row in rows.filter(|r| !r.is_empty()) {
+    pub fn push_rows(&mut self, rows: impl Iterator<Item = Row>, floor_db: f32) {
+        for row in rows.filter(|r| !r.db.is_empty()) {
             self.rows.push_front((floor_db, row));
             self.fresh += 1;
             self.waiting += 1.0;
@@ -186,8 +207,25 @@ impl Band {
         let mut planned: Vec<Column> = Vec::new();
         let mut planned_for = 0;
         let mut mixed: Vec<f32> = Vec::new();
-        for (r, (line, (floor, row))) in pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate() {
+        // The same for the finer rows, which change shape as the zoom does.
+        let mut fine: Vec<Option<Column>> = Vec::new();
+        let mut fine_for = (0.0, 0.0, 0);
+        for (r, (line, (floor, both))) in pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate()
+        {
+            let row = &both.db;
             let n = row.len();
+            // A finer row made while zoomed in is laid over the band's own
+            // wherever it reaches; the rest (older rows, or a view since
+            // moved) is drawn from the band's own, so nothing ever blanks.
+            let zoom = both.zoom.as_ref();
+            if let Some(z) = zoom {
+                let key = (z.lo_hz, z.step_hz, z.db.len());
+                if key != fine_for || fine.len() != cols {
+                    fine = overlay(z, cols, self.lo, self.hi);
+                    fine_for = key;
+                }
+            }
+            let whole = zoom.is_some() && fine.iter().all(Option::is_some);
             if n != planned_for {
                 planned = plan(n, cols, from, to);
                 planned_for = n;
@@ -198,13 +236,14 @@ impl Band {
             // there, more the wider a bin is drawn (a quarter of its width).
             let bin_px = cols as f64 / ((to - from) * n as f64);
             let mix = ((bin_px / 4.0 / self.thick as f64).round() as usize).clamp(1, 12);
-            let row = if mix > 1 {
+            let row = if mix > 1 && !whole {
                 let a = ((from * n as f64) as usize).saturating_sub(1);
                 let b = (((to * n as f64).ceil() as usize) + 1).min(n);
                 mixed.clear();
                 mixed.resize(n, 0.0);
                 let mut used = 0.0;
                 for (_, older) in self.rows.iter().skip(r).take(mix) {
+                    let older = &older.db;
                     if older.len() == n {
                         for (m, v) in mixed[a..b].iter_mut().zip(&older[a..b]) {
                             *m += v;
@@ -221,9 +260,15 @@ impl Band {
             };
             // From a little under the floor to 22 dB over it.
             let (lo, scale) = (floor - 3.0, 255.0 / 25.0);
-            for (px, column) in line.iter_mut().zip(&planned) {
-                let t = ((read(row, *column) - lo) * scale).clamp(0.0, 255.0);
-                *px = self.palette[t as usize];
+            for (c, (px, column)) in line.iter_mut().zip(&planned).enumerate() {
+                let db = match zoom {
+                    Some(z) => match fine[c] {
+                        Some(f) => read(&z.db, f),
+                        None => read(row, *column),
+                    },
+                    None => read(row, *column),
+                };
+                *px = self.palette[((db - lo) * scale).clamp(0.0, 255.0) as usize];
             }
         }
         pixels
@@ -315,10 +360,10 @@ impl Band {
             |x: f32, lo: f64, hi: f64| lo + f64::from((x - rect.left()) / rect.width()) * (hi - lo);
 
         // Zoom about the cursor (DecSAT's: the smoothed wheel, so it glides).
-        // It stops at 32 bins across the view: past that the waterfall is
-        // all blocks.
+        // It stops at 300 Hz across (the finest spectrum the engine makes
+        // has 1 Hz bins), or at 32 of the band's own bins if that is less.
         let bins = view.spectrum_db.len().max(64) as f64;
-        let min_view = (rate / bins * 32.0).max(1.0);
+        let min_view = (rate / bins * 32.0).clamp(1.0, 300.0);
         if let Some(p) = response.hover_pos() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
@@ -364,6 +409,7 @@ impl Band {
         let high = (wf.height() * ppp).round().max(1.0) as usize;
         let thick = high.div_ceil(MAX_ROWS);
         let shown = (high / thick).max(1);
+        self.shown = Some((lo, hi, cols));
         if self.size != [cols, shown] || self.thick != thick {
             self.size = [cols, shown];
             self.thick = thick;
@@ -413,7 +459,16 @@ impl Band {
             }
             // A point over the middle of every screen pixel, so the trace
             // stands exactly on the waterfall's columns.
-            let points: Vec<egui::Pos2> = columns(&view.spectrum_db, cols, from, to)
+            let mut levels = columns(&view.spectrum_db, cols, from, to);
+            // Zoomed in: the finer average where it reaches.
+            if let Some(z) = &view.zoom {
+                for (level, f) in levels.iter_mut().zip(overlay(z, cols, lo, hi)) {
+                    if let Some(f) = f {
+                        *level = read(&z.db, f);
+                    }
+                }
+            }
+            let points: Vec<egui::Pos2> = levels
                 .into_iter()
                 .enumerate()
                 .map(|(i, db)| pos2(spec.left() + (i as f32 + 0.5) / ppp, y_of(db)))
@@ -695,7 +750,13 @@ mod tests {
         let mut came = 0.0f32;
         for frame in 0..600 {
             if frame % 3 == 0 {
-                band.push_rows((0..3).map(|_| vec![0.0; 64]), 0.0);
+                band.push_rows(
+                    (0..3).map(|_| Row {
+                        db: vec![0.0; 64],
+                        zoom: None,
+                    }),
+                    0.0,
+                );
                 came += 3.0;
             }
             let shown = came - band.pacing(1.0 / 60.0);
@@ -709,6 +770,27 @@ mod tests {
             assert!((0.8..1.2).contains(&step), "{step}");
         }
         assert!(band.waiting < 5.0);
+    }
+
+    #[test]
+    fn a_finer_row_is_laid_over_where_it_reaches() {
+        // Bins at 100, 101 ... 199 Hz; the view is 150 to 250 Hz in 100 columns.
+        let zoom = ZoomRow {
+            lo_hz: 100.0,
+            step_hz: 1.0,
+            db: (0..100).map(|i| i as f32).collect(),
+        };
+        let over = overlay(&zoom, 100, 150.0, 250.0);
+        // Covered up to 199.5 Hz: the first 49 columns (middles 150.5 to 198.5 Hz).
+        assert!(over[..49].iter().all(Option::is_some));
+        assert!(over[49..].iter().all(Option::is_none));
+        // Each sits halfway between two bins.
+        assert!((read(&zoom.db, over[0].unwrap()) - 50.5).abs() < 0.01);
+        assert!((read(&zoom.db, over[48].unwrap()) - 98.5).abs() < 0.01);
+        // Zoomed further in it is interpolated.
+        let over = overlay(&zoom, 100, 150.0, 160.0);
+        let v = read(&zoom.db, over[50].unwrap());
+        assert!((v - 55.05).abs() < 1e-3, "{v}");
     }
 
     #[test]

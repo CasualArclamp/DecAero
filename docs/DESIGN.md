@@ -220,6 +220,36 @@ radio its rate and gains (`rate.KEY`, `gain.KEY.STAGE`) and the bias-T choice.
 - An unattended `--screenshot` run neither reads nor writes the file unless
   given one of its own with `--prefs PATH`. `--no-prefs` turns it off.
 
+## Waterfall
+
+`apps/decaero-gui/src/band.rs`, `crates/decaero-engine/src/zoom.rs`.
+
+- **Pixels.** The texture has one column a screen pixel and each row is a
+  whole number of screen pixels high, drawn unfiltered; the band's edges, the
+  marks and the grid lines are put on pixel edges or middles. Nothing is
+  resampled by the graphics card, at any display scaling.
+- **Columns.** Several bins under a column: the strongest (a narrow carrier
+  is never lost between columns). Less than a bin a column: interpolated
+  between bins, and rows averaged in time (up to 12) so the noise is not
+  drawn as dashes.
+- **60 rows a second.** The engine makes three rows a block (overlapping
+  transforms). They reach the window in clumps, so it lets them in at the
+  measured pace, sliding the picture down in whole pixels. The texture is a
+  ring (as DecSAT's): a new row is a one-line upload.
+- **Finer when zoomed in.** Once a pixel is narrower than one of the band's
+  bins, the window tells the engine the view (`Command::Show`) and the engine
+  mixes it to zero, decimates (the CIC `Ddc`, four times oversampled, droop
+  undone) and transforms a stretch `sqrt(base length x pixels / view width)`
+  seconds long, up to 1 s: the resolution grows smoothly with the zoom, and
+  a bin stays about as wide on screen as it is tall. Levels are kept as
+  densities on the band's scale, so noise and carriers keep their colours.
+- **Nothing is cleared.** Every row keeps the band's own spectrum; the finer
+  one is laid over it where it reaches. Zooming or panning never restarts
+  the waterfall: a new zoom only adds detail once it has gathered samples,
+  and one that still covers the view is kept.
+- Unattended: `--view LO_HZ:HI_HZ` sets the view, and a `--screenshot` run
+  prints the mean and longest frame times.
+
 ## Activity history and call log
 
 `apps/decaero-gui/src/activity.rs`. Once a second every decoder that holds

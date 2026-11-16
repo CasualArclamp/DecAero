@@ -85,6 +85,8 @@ struct App {
     engine: Option<Engine>,
     view: View,
     band: band::Band,
+    /// The view last told to the engine.
+    shown_sent: Option<(f64, f64, usize)>,
     rows_seen: u64,
     log: VecDeque<LogLine>,
     log_seen: u64,
@@ -192,6 +194,7 @@ impl App {
         self.live = live;
         self.paused = false;
         self.band.clear();
+        self.shown_sent = None;
         self.rows_seen = 0;
         self.log.clear();
         self.log_seen = 0;
@@ -464,6 +467,18 @@ impl App {
         }
         self.band
             .push_rows(rows.into_iter().map(|(_, r)| r), self.view.floor_db);
+        // Tell the engine what is on screen when that changes: zoomed in,
+        // it makes a finer spectrum of just that part.
+        if self.band.shown != self.shown_sent
+            && let Some((lo_hz, hi_hz, pixels)) = self.band.shown
+        {
+            self.shown_sent = self.band.shown;
+            engine.send(Command::Show {
+                lo_hz,
+                hi_hz,
+                pixels,
+            });
+        }
         for line in engine.log_after(self.log_seen) {
             self.log_seen = line.seq;
             self.log.push_back(line);
@@ -1781,6 +1796,7 @@ fn main() -> eframe::Result {
                 engine: None,
                 view: View::default(),
                 band: band::Band::new(),
+                shown_sent: None,
                 rows_seen: 0,
                 log: VecDeque::new(),
                 log_seen: 0,
