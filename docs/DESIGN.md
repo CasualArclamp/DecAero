@@ -133,6 +133,10 @@ Square, redrawn at 60 frames a second, small dots.
    samples/s, outputs unchanged. A channel costs about a quarter of a percent
    of a core. **Done.**
 
+8. Left-drag on the band draws the box of a new decoder, which then names
+   the carrier inside it (bit rate and so channel type) by itself. **Done**;
+   checked headless with `--example headless -- FILE --no-follow --add HZ:WIDTH`.
+
 Still to do, roughly in this order:
 
 - R and T channel bursts (C-band side).

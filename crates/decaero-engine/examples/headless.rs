@@ -1,22 +1,36 @@
 // made by CasualArclamp
 //! Run the engine over a recording as fast as it goes and print what it
-//! found: `cargo run --release -p decaero-engine --example headless -- FILE.wav [CENTRE_HZ]`
+//! found: `cargo run --release -p decaero-engine --example headless -- FILE.wav [CENTRE_HZ] [--no-follow] [--add HZ:WIDTH]...`
 
-use decaero_engine::{Engine, FileSource, Options};
+use decaero_engine::{Command, Engine, FileSource, Options};
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let path = args.next().expect("a WAV file");
-    let center_hz = args.next().and_then(|a| a.parse().ok()).unwrap_or(0.0);
-    let source = FileSource::open(std::path::Path::new(&path), false).expect("open the recording");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let path = args.first().expect("a WAV file");
+    let center_hz = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(0.0);
+    // `--add HZ:WIDTH` draws a decoder's box by hand, as a drag in the GUI
+    // does; `--no-follow` leaves everything else alone.
+    let follow = !args.iter().any(|a| a == "--no-follow");
+    let source = FileSource::open(std::path::Path::new(path), false).expect("open the recording");
     let engine = Engine::start(
         Box::new(source),
         Options {
             realtime: false,
             center_hz,
+            follow,
             ..Options::default()
         },
     );
+    for pair in args.windows(2).filter(|w| w[0] == "--add") {
+        if let Some((hz, width)) = pair[1].split_once(':')
+            && let (Ok(offset_hz), Ok(width_hz)) = (hz.parse(), width.parse())
+        {
+            engine.send(Command::Add {
+                offset_hz,
+                width_hz,
+            });
+        }
+    }
     let began = std::time::Instant::now();
     loop {
         std::thread::sleep(std::time::Duration::from_millis(200));

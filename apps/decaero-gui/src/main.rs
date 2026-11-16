@@ -795,14 +795,20 @@ impl App {
                 self.selected = Some(id);
                 self.select_hz = None;
             }
-            band::Action::Add { offset_hz, wide } => self.send(Command::Add { offset_hz, wide }),
+            band::Action::Add {
+                offset_hz,
+                width_hz,
+            } => self.send(Command::Add {
+                offset_hz,
+                width_hz,
+            }),
             band::Action::None => {}
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Calls").color(WHITE).size(14.0));
             ui.label(
-                RichText::new("click a carrier to select it · double-click the band to add a decoder (shift: a wide one)")
+                RichText::new("click a carrier to select it · drag across one to add a decoder (it finds the mode itself)")
                     .color(DIM)
                     .size(11.0),
             );

@@ -3,7 +3,7 @@
 //! Laid out and handled as DecSAT's band view (`band_view.rs`): spectrum a
 //! third of the height, an axis strip, the waterfall; the wheel zooms about
 //! the cursor (with egui's smoothed scroll, so it glides), right- or
-//! middle-drag pans.
+//! middle-drag pans. Left-drag draws the box of a new decoder.
 
 use crate::theme::*;
 use decaero_engine::View;
@@ -21,7 +21,11 @@ const ROWS: usize = 300;
 pub enum Action {
     None,
     Select(ChannelId),
-    Add { offset_hz: f64, wide: bool },
+    /// Start a decoder on the carrier inside this box.
+    Add {
+        offset_hz: f64,
+        width_hz: f64,
+    },
 }
 
 pub struct Band {
@@ -37,6 +41,8 @@ pub struct Band {
     hi: f64,
     /// The whole band (the input's sample rate).
     span: f64,
+    /// Where a left-button drag began (Hz): a new decoder's box is being drawn.
+    drag_from: Option<f64>,
 }
 
 /// The strongest bin under each of `cols` columns, for the part of `row`
@@ -65,6 +71,7 @@ impl Band {
             lo: -0.5,
             hi: 0.5,
             span: 1.0,
+            drag_from: None,
         }
     }
 
@@ -354,6 +361,53 @@ impl Band {
             painter.rect_filled(at, 2, colour);
             painter.galley(pos2(at.left() + 4.0, at.top()), galley, Color32::BLACK);
         }
+        // Left-drag draws the box of a new decoder (as dropping a VFO in
+        // DecSAT); letting go starts it, and it names the carrier itself.
+        if response.drag_started_by(PointerButton::Primary) {
+            let origin = ui
+                .input(|i| i.pointer.press_origin())
+                .unwrap_or(rect.center());
+            self.drag_from = Some(hz_at(origin.x, lo, hi));
+        }
+        let mut made = None;
+        if let Some(from) = self.drag_from {
+            let now = ui
+                .input(|i| i.pointer.latest_pos())
+                .map_or(from, |p| hz_at(p.x, lo, hi));
+            let (a, b) = (from.min(now), from.max(now));
+            if response.dragged_by(PointerButton::Primary) {
+                let box_ = egui::Rect::from_min_max(
+                    pos2(x_of(a), spec.top()),
+                    pos2(x_of(b), rect.bottom()),
+                );
+                painter.rect_filled(box_, 0, VFO.gamma_multiply(0.15));
+                painter.line_segment([box_.left_top(), box_.left_bottom()], Stroke::new(1.0, VFO));
+                painter.line_segment(
+                    [box_.right_top(), box_.right_bottom()],
+                    Stroke::new(1.0, VFO),
+                );
+                let label = format!("new decoder · {:.1} kHz", (b - a) / 1e3);
+                painter.text(
+                    box_.center_top() + vec2(0.0, 34.0),
+                    Align2::CENTER_TOP,
+                    label,
+                    font.clone(),
+                    WHITE,
+                );
+            } else {
+                // Released. A drag of a few pixels was a click that slipped.
+                self.drag_from = None;
+                if x_of(b) - x_of(a) >= 6.0 {
+                    made = Some(Action::Add {
+                        offset_hz: (a + b) / 2.0,
+                        width_hz: b - a,
+                    });
+                }
+            }
+        }
+        if let Some(action) = made {
+            return action;
+        }
         // How far in the view is, when it is not the whole band.
         if width_hz < self.span * 0.999 {
             let text = format!(
@@ -373,9 +427,15 @@ impl Band {
         if let Some(p) = response.interact_pointer_pos() {
             let hz = hz_at(p.x, lo, hi);
             if response.double_clicked() {
+                // A box of the usual width; shift for a wide carrier.
+                let width_hz = if ui.input(|i| i.modifiers.shift) {
+                    9000.0
+                } else {
+                    1500.0
+                };
                 return Action::Add {
                     offset_hz: hz,
-                    wide: ui.input(|i| i.modifiers.shift),
+                    width_hz,
                 };
             }
             if response.clicked() {

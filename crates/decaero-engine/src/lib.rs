@@ -166,10 +166,11 @@ pub struct View {
 }
 
 pub enum Command {
-    /// Start a decoder at this offset from the centre.
+    /// Start a decoder on whatever Aero carrier lies within `width_hz`
+    /// around this offset from the centre: it works out the bit rate itself.
     Add {
         offset_hz: f64,
-        wide: bool,
+        width_hz: f64,
     },
     Remove(ChannelId),
     Listen(Option<ChannelId>),
@@ -409,11 +410,17 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         // Commands from the GUI.
         for c in std::mem::take(&mut *shared.commands.lock().unwrap()) {
             match c {
-                Command::Add { offset_hz, wide } => {
-                    let (width, rates) = if wide {
-                        (6000.0, vec![8400, 10500])
+                Command::Add {
+                    offset_hz,
+                    width_hz,
+                } => {
+                    // A narrow box can only hold a slow carrier; a wide one
+                    // may hold anything, the fast rates being likeliest.
+                    let width = width_hz.clamp(1000.0, 40_000.0);
+                    let rates = if width < 2500.0 {
+                        vec![600, 1200]
                     } else {
-                        (1500.0, vec![600, 1200])
+                        vec![8400, 10500, 1200, 600]
                     };
                     spawn(
                         &mut workers,
