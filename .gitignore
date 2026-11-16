@@ -17,4 +17,5 @@
 *.ogg
 /IQ
 # Screenshots of real traffic show aircraft and messages: not committed.
+# (docs/pictures holds the README's, cropped to leave those panels out.)
 /docs/images

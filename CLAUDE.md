@@ -30,6 +30,7 @@ python scripts/gen_ambe_tables.py ../jaero-ref/libaeroambe/mbelib-master > crate
 - The radios on this machine may be held by the user's own apps: never open
   one (`--radio`, Start radio) without asking, and never kill what holds it.
 - Never commit screenshots of real traffic (aircraft, messages): `out/` and
-  `docs/images/` are ignored.
+  `docs/images/` are ignored. The README's pictures are in `docs/pictures/`,
+  cropped so the message log and the aircraft list are not in them.
 - The user has a strong DSP background and is newer to Rust: explain Rust idioms, not DSP.
 - DSP claims (sensitivity above all) are measured on the test modulator before they are written down.
