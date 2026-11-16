@@ -1,6 +1,8 @@
 <!-- made by CasualArclamp -->
 # DecAero
 
+If you've found this worth your time, please consider [donating via PayPal](https://www.paypal.me/Arclamp).
+
 A receiver for Inmarsat Classic Aero, the satellite link airliners use for
 ACARS messages, position reports and cockpit voice. It decodes every carrier
 in the band at once, follows voice calls as they are set up, and shows for
