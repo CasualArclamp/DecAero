@@ -1,6 +1,7 @@
 // made by CasualArclamp
 //! Call recordings: one small Ogg Opus file per call (about 12 kbit/s, so an
 //! hour of talk is around 5 MB), named by date, time, frequency and aircraft.
+//! Each finished call also gets a line in `calls.csv` beside the day folders.
 //!
 //! The Ogg wrapping follows RFC 7845: an `OpusHead` packet, an `OpusTags`
 //! packet, then 20 ms audio packets with the position counted at 48 kHz.
@@ -26,6 +27,9 @@ struct CallFile {
     path: PathBuf,
     last_audio: Instant,
     frames: u64,
+    /// For the call log: when it began (UTC) and where it was.
+    began: (i64, u32, u32, u32, u32, u32),
+    carrier_hz: f64,
 }
 
 pub struct Recorder {
@@ -35,14 +39,34 @@ pub struct Recorder {
     /// The newest file written, for the status line.
     pub last: Option<PathBuf>,
     pub error: Option<String>,
+    /// The input's centre frequency, for the call log (0 when not known).
+    pub center_hz: f64,
+}
+
+/// A call that is over, as the call log wants it.
+pub struct Ended {
+    pub channel: ChannelId,
+    pub aes: Option<u32>,
+    pub ges: Option<u8>,
+    /// Registration and type, where the aircraft is known.
+    pub aircraft: String,
+}
+
+/// Seconds since 1970 by the system clock.
+pub fn unix_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// UTC date and time of day from the system clock: (year, month, day, h, m, s).
 fn utc_now() -> (i64, u32, u32, u32, u32, u32) {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
+    civil(unix_now() as i64)
+}
+
+/// Seconds since 1970 as a UTC date and time of day.
+pub fn civil(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400) as u32);
     // Days to a calendar date (Howard Hinnant's civil-from-days).
     let z = days + 719_468;
@@ -57,6 +81,18 @@ fn utc_now() -> (i64, u32, u32, u32, u32, u32) {
     (year, month, day, rem / 3600, rem / 60 % 60, rem % 60)
 }
 
+impl Ended {
+    /// A call closed without its end being seen (it went quiet, or we quit).
+    fn unknown(channel: ChannelId) -> Self {
+        Self {
+            channel,
+            aes: None,
+            ges: None,
+            aircraft: String::new(),
+        }
+    }
+}
+
 impl Recorder {
     pub fn new(dir: PathBuf) -> Self {
         Self {
@@ -65,6 +101,7 @@ impl Recorder {
             next_serial: 1,
             last: None,
             error: None,
+            center_hz: 0.0,
         }
     }
 
@@ -130,6 +167,8 @@ impl Recorder {
             path,
             last_audio: Instant::now(),
             frames: 0,
+            began: (y, mo, d, h, mi, s),
+            carrier_hz,
         })
     }
 
@@ -179,7 +218,8 @@ impl Recorder {
     }
 
     /// The call is over: close its file, adding the aircraft to the name.
-    pub fn finish(&mut self, channel: ChannelId, aes: Option<u32>) {
+    pub fn finish(&mut self, end: &Ended) {
+        let (channel, aes) = (end.channel, end.aes);
         let Some(mut call) = self.calls.remove(&channel) else {
             return;
         };
@@ -205,13 +245,63 @@ impl Recorder {
                 path = named;
             }
         }
+        if let Err(e) = self.log(&call.began, call.frames, call.carrier_hz, end, &path) {
+            self.error = Some(format!("call log: {e}"));
+        }
         self.last = Some(path);
     }
 
+    /// The call log: `calls.csv`, a line per call, opened by any spreadsheet.
+    fn log(
+        &self,
+        began: &(i64, u32, u32, u32, u32, u32),
+        frames: u64,
+        carrier_hz: f64,
+        end: &Ended,
+        file: &Path,
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+        let path = self.dir.join("calls.csv");
+        let new = !path.exists();
+        let mut out = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        if new {
+            writeln!(
+                out,
+                "date,time_utc,seconds,mhz,offset_khz,aes,aircraft,ges,file"
+            )?;
+        }
+        let (y, mo, d, h, mi, s) = *began;
+        let mhz = if self.center_hz > 0.0 {
+            format!("{:.4}", (self.center_hz + carrier_hz) / 1e6)
+        } else {
+            String::new()
+        };
+        // The file as a path from the log's own folder.
+        let file = file.strip_prefix(&self.dir).unwrap_or(file);
+        writeln!(
+            out,
+            "{y:04}-{mo:02}-{d:02},{h:02}:{mi:02}:{s:02},{:.1},{mhz},{:+.1},{},\"{}\",{},{}",
+            frames as f64 * 0.02,
+            carrier_hz / 1e3,
+            end.aes.map(|a| format!("{a:06X}")).unwrap_or_default(),
+            end.aircraft.replace('"', "'"),
+            end.ges.map(|g| format!("{g:02X}")).unwrap_or_default(),
+            file.display().to_string().replace('\\', "/"),
+        )
+    }
+
+    /// Is a file open for this channel?
+    pub fn recording(&self, channel: ChannelId) -> bool {
+        self.calls.contains_key(&channel)
+    }
+
     /// Close files of calls that have gone quiet or are no longer listed.
-    pub fn tidy(&mut self, ended: &[(ChannelId, Option<u32>)]) {
-        for (channel, aes) in ended {
-            self.finish(*channel, *aes);
+    pub fn tidy(&mut self, ended: &[Ended]) {
+        for end in ended {
+            self.finish(end);
         }
         let stale: Vec<ChannelId> = self
             .calls
@@ -220,7 +310,7 @@ impl Recorder {
             .map(|(id, _)| *id)
             .collect();
         for id in stale {
-            self.finish(id, None);
+            self.finish(&Ended::unknown(id));
         }
     }
 
@@ -233,7 +323,49 @@ impl Drop for Recorder {
     fn drop(&mut self) {
         let open: Vec<ChannelId> = self.calls.keys().copied().collect();
         for id in open {
-            self.finish(id, None);
+            self.finish(&Ended::unknown(id));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_call_is_saved_and_logged() {
+        let dir = std::env::temp_dir().join(format!("decaero-calls-{}", std::process::id()));
+        let mut rec = Recorder::new(dir.clone());
+        rec.center_hz = 1545e6;
+        // Two seconds of a 400 Hz tone on one channel, a little on another.
+        let tone: Vec<i16> = (0..16_000)
+            .map(|i| ((i as f32 * 0.314).sin() * 8000.0) as i16)
+            .collect();
+        rec.feed(7, 262_500.0, &tone);
+        rec.feed(8, -40_000.0, &tone[..1600]);
+        assert!(rec.recording(7) && rec.open_calls() == 2);
+        rec.tidy(&[Ended {
+            channel: 7,
+            aes: Some(0x4CA123),
+            ges: Some(0xC1),
+            aircraft: "EI-ABC · A333".into(),
+        }]);
+        assert!(rec.error.is_none(), "{:?}", rec.error);
+        let saved = rec.last.clone().unwrap();
+        assert!(saved.to_string_lossy().ends_with("_+262.5kHz_4CA123.opus"));
+        assert!(std::fs::metadata(&saved).unwrap().len() > 500);
+        // The other is closed, with what little is known, when we stop.
+        drop(rec);
+        let log = std::fs::read_to_string(dir.join("calls.csv")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 3, "{log}");
+        assert!(lines[0].starts_with("date,time_utc,seconds,mhz"));
+        assert!(
+            lines[1].contains(",2.0,1545.2625,+262.5,4CA123,\"EI-ABC · A333\",C1,20"),
+            "{log}"
+        );
+        assert!(lines[1].ends_with("_+262.5kHz_4CA123.opus") && !lines[1].contains('\\'));
+        assert!(lines[2].contains(",0.2,1544.9600,-40.0,,\"\",,"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

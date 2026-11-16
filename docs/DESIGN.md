@@ -220,6 +220,28 @@ radio its rate and gains (`rate.KEY`, `gain.KEY.STAGE`) and the bias-T choice.
 - An unattended `--screenshot` run neither reads nor writes the file unless
   given one of its own with `--prefs PATH`. `--no-prefs` turns it off.
 
+## Activity history and call log
+
+`apps/decaero-gui/src/activity.rs`. Once a second every decoder that holds
+lock (a burst channel: one that has just decoded a burst) adds to the minute
+now running, on a row for its frequency (rounded to the 2.5 kHz raster) and
+mode. The Activity tab under the band draws it as a heat map, frequencies down
+and UTC time across, over 1 h, 6 h, 24 h or 7 d; the colour is the share of
+each column's time in use, on a square-root scale so a burst or a short call
+still shows.
+
+- A live input's history is kept in `activity.txt` beside the settings:
+  `minute hertz mode seconds` lines, added as each minute ends and when the
+  input stops. Reading it sums a minute written in parts, drops what is older
+  than 8 days and then writes the file afresh.
+- A recording gets a history of its own, timed as if it began when opened and
+  laid out by the recording's clock, and not kept, so replaying a test file
+  does not fill the real history. `--activity FILE` keeps it all the same.
+- Always-on P channels cost about 25 bytes a minute each: twenty of them over
+  8 days is some 6 MB.
+- Call log: `calls.csv` in the recordings folder, a line as each recording is
+  closed (date, UTC time, seconds, MHz, offset, AES, aircraft, GES, file).
+
 ## Feeds out
 
 `decaero-engine/src/feed.rs`, after JAERO (`mainwindow.cpp`, `sbs1.cpp`). One
@@ -245,6 +267,5 @@ thread owns the sockets.
 Still to do, roughly in this order:
 
 - Tone frames synthesised (ringback is silent now).
-- Channel activity history (the heat map), kept across restarts; call log file.
 - decsat-server's compressed link as an input.
 - A test modulator crate, so the sensitivity figures are regression tests.

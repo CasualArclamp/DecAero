@@ -7,8 +7,9 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--add HZ:WIDTH] [--out-dir DIR]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
+mod activity;
 mod aircraft;
 mod audio;
 mod band;
@@ -37,6 +38,13 @@ const TRAIL: usize = 1800;
 enum Tab {
     Messages,
     Signalling,
+}
+
+/// What the space under the band shows.
+#[derive(PartialEq, Clone, Copy)]
+enum Lower {
+    Calls,
+    Activity,
 }
 
 /// A live input once it is open: the source, and a radio's gain control.
@@ -128,6 +136,15 @@ struct App {
     prefs: prefs::Prefs,
     prefs_path: Option<PathBuf>,
     prefs_checked: Instant,
+    /// Which frequencies were in use when: the history, its picture, the
+    /// file a live input's history is kept in, and (for a recording) the
+    /// clock time its first sample is taken to have.
+    lower: Lower,
+    activity: activity::Activity,
+    activity_panel: activity::Panel,
+    activity_path: Option<PathBuf>,
+    activity_always: bool,
+    file_began: f64,
 }
 
 impl App {
@@ -156,6 +173,15 @@ impl App {
             a.attach(engine.audio_tap());
         }
         self.engine = Some(engine);
+        // A live input carries on the kept history; a recording gets a
+        // history of its own, as if it had begun just now.
+        self.file_began = recorder::unix_now();
+        self.activity = match &self.activity_path {
+            Some(path) if live || self.activity_always => {
+                activity::Activity::kept(path, (self.file_began / 60.0) as u32)
+            }
+            _ => activity::Activity::new(),
+        };
         // The engine starts with scan on.
         if !self.scan {
             self.send(Command::Scan(false));
@@ -288,6 +314,14 @@ impl App {
                 Filter::Military => "military",
             },
         );
+        p.set(
+            "lower",
+            match self.lower {
+                Lower::Calls => "calls",
+                Lower::Activity => "activity",
+            },
+        );
+        p.set("activity_span", self.activity_panel.span.label());
         p.set("net_url", &self.net_url);
         p.set("net_rate_ks", self.net_rate_text.trim());
         p.set("net_format", self.net_format.label());
@@ -330,6 +364,12 @@ impl App {
             Some("military") => Filter::Military,
             _ => Filter::All,
         };
+        if p.get("lower") == Some("activity") {
+            self.lower = Lower::Activity;
+        }
+        if let Some(span) = p.get("activity_span").and_then(activity::Span::parse) {
+            self.activity_panel.span = span;
+        }
         if !given.net {
             if let Some(v) = p.get("net_url").filter(|v| !v.is_empty()) {
                 self.net_url = v.to_string();
@@ -382,6 +422,17 @@ impl App {
         }
     }
 
+    /// The time on the activity history's clock: the real one for a live
+    /// input, the recording's own for a file (so a fast or paused playback
+    /// is laid out as it was recorded).
+    fn activity_now(&self) -> f64 {
+        if self.live {
+            recorder::unix_now()
+        } else {
+            self.file_began + self.view.seconds
+        }
+    }
+
     fn send(&self, c: Command) {
         if let Some(e) = &self.engine {
             e.send(c);
@@ -429,14 +480,30 @@ impl App {
                     .map_or(0.0, |c| c.carrier_hz);
                 rec.feed(*channel, hz, pcm);
             }
+            rec.center_hz = self.view.center_hz;
             let ended: Vec<_> = self
                 .view
                 .calls
                 .iter()
-                .filter(|c| c.end_s.is_some())
-                .map(|c| (c.channel, c.aes))
+                .filter(|c| c.end_s.is_some() && rec.recording(c.channel))
+                .map(|c| recorder::Ended {
+                    channel: c.channel,
+                    aes: c.aes,
+                    ges: c.ges,
+                    aircraft: c
+                        .aes
+                        .map(|a| self.aircraft.get(a).short())
+                        .unwrap_or_default(),
+                })
                 .collect();
             rec.tidy(&ended);
+        }
+        // Which frequencies are in use, for the activity map.
+        let now = self.activity_now();
+        self.activity
+            .note(now, self.view.center_hz, &self.view.channels);
+        if let Some(e) = self.activity.error.take() {
+            self.error = Some(e);
         }
 
         // Keep a selection: the one asked for on the command line, else the
@@ -1279,13 +1346,39 @@ impl App {
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Calls").color(WHITE).size(14.0));
-            ui.label(
-                RichText::new("click a carrier to select it · drag across one to add a decoder (it finds the mode itself)")
+            ui.selectable_value(&mut self.lower, Lower::Calls, "Calls");
+            ui.selectable_value(&mut self.lower, Lower::Activity, "Activity")
+                .on_hover_text("Which frequencies were in use, and when");
+            if self.lower == Lower::Activity {
+                ui.separator();
+                for span in activity::Span::ALL {
+                    ui.selectable_value(&mut self.activity_panel.span, span, span.label());
+                }
+                let kept = (self.live || self.activity_always) && self.activity_path.is_some();
+                ui.label(
+                    RichText::new(if kept {
+                        "kept between runs"
+                    } else if self.live {
+                        "this run only"
+                    } else {
+                        "this recording only, timed as if it began when opened"
+                    })
                     .color(DIM)
                     .size(11.0),
-            );
+                );
+            } else {
+                ui.label(
+                    RichText::new("click a carrier to select it · drag across one to add a decoder (it finds the mode itself)")
+                        .color(DIM)
+                        .size(11.0),
+                );
+            }
         });
+        if self.lower == Lower::Activity {
+            let now = self.activity_now();
+            self.activity_panel.show(ui, &self.activity, now);
+            return;
+        }
         egui::ScrollArea::vertical()
             .id_salt("calls")
             .auto_shrink([false, false])
@@ -1598,6 +1691,7 @@ fn main() -> eframe::Result {
     let mut feeds = FeedOptions::default();
     let mut prefs_arg: Option<PathBuf> = None;
     let mut no_prefs = false;
+    let mut activity_arg: Option<PathBuf> = None;
     let mut adds: Vec<(f64, f64)> = Vec::new();
     let mut net_rate = 625_000.0f64;
     let mut net_format = net::Format::I16;
@@ -1615,6 +1709,7 @@ fn main() -> eframe::Result {
             "--station" => feeds.station = args.next().unwrap_or_default(),
             "--prefs" => prefs_arg = args.next().map(PathBuf::from),
             "--no-prefs" => no_prefs = true,
+            "--activity" => activity_arg = args.next().map(PathBuf::from),
             "--net" => net_url = args.next(),
             "--rate" => {
                 net_rate = args.next().and_then(|v| v.parse().ok()).unwrap_or(net_rate);
@@ -1718,6 +1813,12 @@ fn main() -> eframe::Result {
                 prefs: prefs::Prefs::default(),
                 prefs_path: None,
                 prefs_checked: Instant::now(),
+                lower: Lower::Calls,
+                activity: activity::Activity::new(),
+                activity_panel: activity::Panel::new(),
+                activity_path: None,
+                activity_always: activity_arg.is_some(),
+                file_began: 0.0,
             };
             // Settings of the last run. An unattended screenshot run keeps
             // to its command line: it neither reads nor writes them, unless
@@ -1733,6 +1834,13 @@ fn main() -> eframe::Result {
                 app.prefs = prefs::Prefs::load(&path);
                 app.prefs_path = Some(path);
             }
+            // The activity history lives beside the settings. Given a file
+            // of its own it is kept for recordings too.
+            app.activity_path = activity_arg.clone().or_else(|| {
+                app.prefs_path
+                    .as_ref()
+                    .map(|p| p.with_file_name("activity.txt"))
+            });
             // The HydraSDR (the Airspy driver) is the usual radio here.
             let usual = app
                 .radios

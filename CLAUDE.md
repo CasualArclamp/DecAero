@@ -14,7 +14,6 @@ cargo run --release -p decaero-gui -- --net sdrpp://127.0.0.1:5259 --center 1545
 cargo run --release -p decaero-engine --example headless -- FILE.wav 0 --json-udp 127.0.0.1:5555 --sbs listen:30003   # feeds out
 cargo run --release -p decaero-dsp --example aerorx -- FILE.wav [--at HZ[:slow]] [--units]   # bench receiver
 cargo run --release -p decaero-dsp --example bench    # speed of the hot loops (measure before and after)
-powershell -ExecutionPolicy Bypass -File scriptsuild-portable.ps1   # the portable exe into exe\ (static CRT)
 powershell -ExecutionPolicy Bypass -File scripts/build-portable.ps1   # the portable exe into exe/ (static CRT)
 python scripts/gen_ambe_tables.py ../jaero-ref/libaeroambe/mbelib-master > crates/decaero-ambe/src/tables.rs
 ```
