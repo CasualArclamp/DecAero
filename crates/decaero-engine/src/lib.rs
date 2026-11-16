@@ -22,6 +22,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// The widest vector unit the DSP loops use on this CPU (SSE2, AVX2 or AVX-512).
+pub fn vector_level() -> &'static str {
+    decaero_dsp::simd::vector_level()
+}
+
 /// Where samples come from.
 pub trait Source: Send {
     fn rate(&self) -> f64;

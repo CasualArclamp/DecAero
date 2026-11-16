@@ -223,13 +223,10 @@ impl Demod {
             self.nco_phase = (self.nco_phase + step).rem_euclid(TAU);
             work.push(x * Complex32::new(c as f32, s as f32));
         }
-        for w in work.windows(n_taps) {
-            let mut acc = Complex32::default();
-            for (x, t) in w.iter().zip(&self.taps) {
-                acc += x * t;
-            }
-            self.hist.push(acc);
-        }
+        // Every output the input reaches, a block at a time (AVX2 or
+        // AVX-512 where the CPU has them). The taps are symmetric, so their
+        // order does not matter.
+        crate::simd::fir_cr(&work, &self.taps, &mut self.hist);
         self.tail = work.split_off(work.len() - (n_taps - 1));
 
         // Whole blocks while the filtered samples reach.

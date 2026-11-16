@@ -5,4 +5,5 @@
 pub mod acquire;
 pub mod ddc;
 pub mod demod;
+pub mod simd;
 pub mod wav;

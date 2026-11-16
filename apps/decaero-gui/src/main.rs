@@ -303,7 +303,11 @@ impl App {
                 format!("{live} decoders, {locked} locked"),
                 format!("{calls} calls"),
                 format!("CPU {:.0}% of a core", cpu * 100.0),
-                format!("{} blocks lost", v.dropped_blocks),
+                format!(
+                    "{} · {}",
+                    decaero_engine::vector_level(),
+                    format_args!("{} blocks lost", v.dropped_blocks)
+                ),
                 match &self.recorder {
                     Some(r) if r.open_calls() > 0 => format!(
                         "recording {} call(s) to {}",

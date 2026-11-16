@@ -126,6 +126,13 @@ Square, redrawn at 60 frames a second, small dots.
    settings folder), state of registry from the address, All / US / Military
    filters; wheel zoom and right-drag pan on the band as in DecSAT. **Done.**
 
+7. AVX2 and AVX-512 copies of the hot loops, picked at run time
+   (`decaero-dsp/src/simd.rs`; DecSAT's block FIR and an oscillator multiply
+   done the same way). Measured on the 9800X3D with `--example bench`:
+   down-converter 136 to 474 M samples/s, demodulator 20.5 to 54.3 M
+   samples/s, outputs unchanged. A channel costs about a quarter of a percent
+   of a core. **Done.**
+
 Still to do, roughly in this order:
 
 - R and T channel bursts (C-band side).

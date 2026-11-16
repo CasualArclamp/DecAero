@@ -4,6 +4,7 @@
 //! additions per input sample, so twenty channels off one wide recording are
 //! cheap, and its nulls sit on the frequencies that would alias back in.
 
+use crate::simd::{self, MIX};
 use num_complex::Complex32;
 
 /// Scale to integers before the CIC so its running sums are exact.
@@ -14,6 +15,12 @@ pub struct Ddc {
     decim: usize,
     phase: f64,
     step: f64,
+    /// The oscillator's turn after 0, 1, 2 ... samples: the multiply is done
+    /// a table's length at a time (see `simd::mix`), with the oscillator's
+    /// own position taken afresh in double precision for each.
+    table: [Complex32; MIX],
+    /// Input left over from the last call, less than a table's length.
+    pending: Vec<Complex32>,
     /// The three integrators (wrapping arithmetic is what makes a CIC work).
     integ: [[i64; 2]; 3],
     /// The three combs' previous values at the output rate.
@@ -22,15 +29,25 @@ pub struct Ddc {
     gain: f32,
 }
 
+fn table_for(step: f64) -> [Complex32; MIX] {
+    std::array::from_fn(|k| {
+        let (s, c) = (step * k as f64).sin_cos();
+        Complex32::new(c as f32, s as f32)
+    })
+}
+
 impl Ddc {
     /// Shift `offset_hz` to zero and decimate by `decim`.
     pub fn new(in_rate: f64, offset_hz: f64, decim: usize) -> Self {
         let decim = decim.max(1);
+        let step = -std::f64::consts::TAU * offset_hz / in_rate;
         Self {
             in_rate,
             decim,
             phase: 0.0,
-            step: -std::f64::consts::TAU * offset_hz / in_rate,
+            step,
+            table: table_for(step),
+            pending: Vec::with_capacity(MIX),
             integ: [[0; 2]; 3],
             comb: [[0; 2]; 3],
             count: 0,
@@ -49,22 +66,22 @@ impl Ddc {
 
     pub fn set_offset(&mut self, offset_hz: f64) {
         self.step = -std::f64::consts::TAU * offset_hz / self.in_rate;
+        self.table = table_for(self.step);
     }
 
-    pub fn process(&mut self, input: &[Complex32], out: &mut Vec<Complex32>) {
-        for &x in input {
-            let (s, c) = self.phase.sin_cos();
-            self.phase += self.step;
-            if self.phase > std::f64::consts::PI {
-                self.phase -= std::f64::consts::TAU;
-            } else if self.phase < -std::f64::consts::PI {
-                self.phase += std::f64::consts::TAU;
-            }
-            let (c, s) = (c as f32, s as f32);
-            let mut v = [
-                ((x.re * c - x.im * s) * SCALE) as i64,
-                ((x.re * s + x.im * c) * SCALE) as i64,
-            ];
+    /// One table's length of input: mix, then the CIC.
+    fn chunk(&mut self, x: &[Complex32; MIX], out: &mut Vec<Complex32>) {
+        let (s, c) = self.phase.sin_cos();
+        self.phase = (self.phase + self.step * MIX as f64).rem_euclid(std::f64::consts::TAU);
+        let mut mixed = [Complex32::default(); MIX];
+        simd::mix(
+            x,
+            Complex32::new(c as f32, s as f32),
+            &self.table,
+            &mut mixed,
+        );
+        for m in mixed {
+            let mut v = [(m.re * SCALE) as i64, (m.im * SCALE) as i64];
             for stage in &mut self.integ {
                 stage[0] = stage[0].wrapping_add(v[0]);
                 stage[1] = stage[1].wrapping_add(v[1]);
@@ -84,6 +101,28 @@ impl Ddc {
                 ));
             }
         }
+    }
+
+    /// Input in, decimated baseband appended to `out`. Up to a table's
+    /// length of input (63 samples) waits for the next call.
+    pub fn process(&mut self, input: &[Complex32], out: &mut Vec<Complex32>) {
+        let mut input = input;
+        if !self.pending.is_empty() {
+            let take = (MIX - self.pending.len()).min(input.len());
+            self.pending.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.pending.len() < MIX {
+                return;
+            }
+            let block: [Complex32; MIX] = self.pending[..].try_into().expect("a full table");
+            self.pending.clear();
+            self.chunk(&block, out);
+        }
+        let (blocks, rest) = input.as_chunks::<MIX>();
+        for block in blocks {
+            self.chunk(block, out);
+        }
+        self.pending.extend_from_slice(rest);
     }
 }
 
