@@ -33,17 +33,31 @@ const FIRST_STRENGTH: f32 = 5.0;
 /// channels of one beam take.
 const EACH_SIDE: usize = 80;
 
+/// Length of the filter bank's transform for an input at `in_rate`.
+fn bank_size(in_rate: f64) -> usize {
+    // Channels about 9.8 kHz apart: each takes in a 10500 bit/s carrier
+    // wherever it sits between two of them.
+    ((in_rate / 9766.0).round() as usize)
+        .next_power_of_two()
+        .max(8)
+}
+
+/// A strong carrier leaks a little into every channel of the bank, and there
+/// it is seen again, moved by a whole number of these steps (half a channel's
+/// sample rate, since the squaring doubles every frequency). A find that far
+/// from a carrier already known, at the same bit rate, is that carrier.
+pub fn alias_step(in_rate: f64) -> f64 {
+    let n = bank_size(in_rate);
+    in_rate / (n / 4) as f64 / 2.0
+}
+
 pub fn run(
     in_rate: f64,
     blocks: Receiver<Arc<Vec<Complex32>>>,
     events: Sender<Event>,
     stop: Arc<AtomicBool>,
 ) {
-    // Channels about 9.8 kHz apart: each takes in a 10500 bit/s carrier
-    // wherever it sits between two of them.
-    let n = ((in_rate / 9766.0).round() as usize)
-        .next_power_of_two()
-        .max(8);
+    let n = bank_size(in_rate);
     let hop = n / 4;
     let out_rate = in_rate / hop as f64;
     let spacing = in_rate / n as f64;

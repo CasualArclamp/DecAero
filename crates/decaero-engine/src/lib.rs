@@ -635,7 +635,16 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                         .iter()
                         .any(|b| ((a + b) / 2.0 - offset).abs() < 300.0)
                 });
-                if ghost || deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r) {
+                // A known carrier seen again through the scan's filter bank.
+                let step = scanner::alias_step(rate);
+                let echo = workers.iter().filter(|w| !w.closed).any(|w| {
+                    let s = w.status.lock().unwrap();
+                    let same_rate = matches!(s.kind, Kind::P(r) | Kind::Rt(r) if r == bit_rate)
+                        || (s.kind == Kind::C && bit_rate == 8400);
+                    let steps = (offset - s.carrier_hz) / step;
+                    same_rate && steps.round() != 0.0 && (steps - steps.round()).abs() * step < 8.0
+                });
+                if ghost || echo || deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r) {
                     continue;
                 }
                 // A decoder still searching here gives way: the scan knows

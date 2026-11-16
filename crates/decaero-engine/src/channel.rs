@@ -272,7 +272,95 @@ struct BurstPath {
     t_data: Reassembler,
 }
 
+/// Watches a decoder that has lost its place and finds the carrier again.
+///
+/// The demodulator's frequency loop only reads a few hertz either way at
+/// the slow rates. A break in the samples or a burst of interference can
+/// throw it further, and then it never comes back: the constellation is a
+/// ring. So when a channel stays out of lock, the carrier is looked for
+/// afresh in the last seconds of samples, the way it was first found.
+struct Resync {
+    /// Recent samples, thinned to about 2.7 a bit (little noise besides the
+    /// signal goes into the squaring that way).
+    recent: Vec<Complex32>,
+    rate: f64,
+    keep: usize,
+    /// Samples being averaged into the next kept one.
+    sum: Complex32,
+    count: usize,
+    /// When lock was last held, and when a search was last made.
+    out_since: Option<f64>,
+    tried: f64,
+}
+
+/// One thinned sample for this many of the demodulator's.
+const THIN: usize = 3;
+
+impl Resync {
+    fn new(rate: f64, bit_rate: u32) -> Self {
+        let rate = rate / THIN as f64;
+        // Enough for bins of well under a hertz at the slow rates.
+        let seconds = if bit_rate <= 1200 { 4.0 } else { 1.5 };
+        Self {
+            recent: Vec::new(),
+            rate,
+            keep: (seconds * rate) as usize,
+            sum: Complex32::default(),
+            count: 0,
+            out_since: None,
+            tried: 0.0,
+        }
+    }
+
+    fn add(&mut self, narrow: &[Complex32]) {
+        for &x in narrow {
+            self.sum += x;
+            self.count += 1;
+            if self.count == THIN {
+                self.recent.push(self.sum / THIN as f32);
+                self.sum = Complex32::default();
+                self.count = 0;
+            }
+        }
+        if self.recent.len() > 2 * self.keep {
+            let cut = self.recent.len() - self.keep;
+            self.recent.drain(..cut);
+        }
+    }
+
+    /// Give the lock state after every block; returns the carrier offset to
+    /// move to when the channel has been out long enough and the carrier is
+    /// plainly there.
+    fn check(&mut self, locked: bool, seconds: f64, bit_rate: u32, search_hz: f64) -> Option<f64> {
+        if locked {
+            self.out_since = None;
+            return None;
+        }
+        let since = *self.out_since.get_or_insert(seconds);
+        // A frame or two of grace, then a look every few seconds.
+        let (grace, every) = if bit_rate <= 1200 {
+            (2.5, 4.0)
+        } else {
+            (1.0, 1.5)
+        };
+        if seconds - since < grace || seconds - self.tried < every || self.recent.len() < self.keep
+        {
+            return None;
+        }
+        self.tried = seconds;
+        let from = self.recent.len() - self.keep;
+        let found = acquire::find(&self.recent[from..], self.rate, &[bit_rate], search_hz);
+        found
+            .first()
+            .filter(|f| f.strength >= 4.5)
+            .map(|f| f.offset_hz)
+    }
+}
+
 struct Running {
+    resync: Resync,
+    /// How far either side of the decoder's centre the carrier may be.
+    search_hz: f64,
     /// The burst path, for the bit rates aircraft send bursts at.
     bursts: Option<BurstPath>,
     ddc: Ddc,
@@ -477,6 +565,8 @@ fn start_chain(
         t_data: Reassembler::new(),
     });
     Running {
+        resync: Resync::new(ddc.out_rate(), bit_rate),
+        search_hz: req.search_hz.min(f64::from(bit_rate) * 0.4),
         bursts,
         ddc,
         demod,
@@ -505,6 +595,7 @@ fn process(
     for piece in narrow.chunks(512) {
         r.demod.process(piece, soft);
     }
+    r.resync.add(narrow);
     // Decode, collecting what changed.
     let mut frame_errors = 0u32;
     let mut frame_bits = 0u32;
@@ -760,6 +851,30 @@ fn process(
         r.recent_bits = 0.9 * r.recent_bits + frame_bits as f32;
     }
 
+    // Out of lock for a while: find the carrier again.
+    let burst_channel = matches!(status.lock().unwrap().kind, Kind::Rt(_));
+    let bit_rate = match kind {
+        Kind::P(rate) | Kind::Rt(rate) => rate,
+        _ => 8400,
+    };
+    if !burst_channel && let Some(offset) = r.resync.check(locked, seconds, bit_rate, r.search_hz) {
+        let moved = offset - r.demod.status().offset_hz;
+        // Close by, the loop is not what is wrong: leave it be.
+        if moved.abs() > 2.0 {
+            r.demod.retune(offset);
+            let _ = events.send(Event::Log {
+                channel: id,
+                kind,
+                seconds,
+                aes: None,
+                ges: None,
+                title: "carrier found again".into(),
+                text: format!(
+                    "sync was lost; the carrier is {moved:+.1} Hz from where the loop had gone"
+                ),
+            });
+        }
+    }
     let ds = r.demod.status();
     let mut s = status.lock().unwrap();
     // A burst channel keeps its name between bursts.

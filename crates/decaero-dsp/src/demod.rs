@@ -185,6 +185,16 @@ impl Demod {
         }
     }
 
+    /// Move the carrier oscillator to `offset_hz` and forget what the
+    /// frequency loop had gathered. For a carrier found again by other means
+    /// after the loop has been thrown further than it can pull back from
+    /// (it reads only a few hertz either way at the slow rates).
+    pub fn retune(&mut self, offset_hz: f64) {
+        self.nco_hz = offset_hz;
+        self.freq_vector = Complex32::default();
+        self.status.offset_hz = offset_hz;
+    }
+
     pub fn status(&self) -> &DemodStatus {
         &self.status
     }

@@ -40,7 +40,9 @@ pub fn carriers(spectrum_db: &[f32], rate: f64, min_db: f32) -> Survey {
     // The floor is a low percentile of the passband only: a filtered input (a
     // receiver's audio, a decimated SDR) has dead edges far below the noise,
     // which must not count.
-    let cut = sorted[n * 9 / 10] - 15.0;
+    // A recording of a receiver's audio is silence but for a few kHz: there
+    // the bins that count are the ones within reach of the strongest.
+    let cut = (sorted[n * 9 / 10] - 15.0).max(sorted[n - 1] - 45.0);
     let live = sorted.partition_point(|&v| v < cut);
     let floor_db = sorted[live + (n - live) * 3 / 10];
     let above = |i: usize| i < n && smooth[i] > floor_db + min_db;

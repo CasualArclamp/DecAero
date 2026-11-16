@@ -179,6 +179,32 @@ Square, redrawn at 60 frames a second, small dots.
     Rory's has been tried.
 13. A real-IF input shows and uses its upper half only (the lower is its mirror).
 
+## Losing and finding sync
+
+The demodulator's frequency loop reads only a few hertz either way at the slow
+rates (about 9 Hz at 600 bit/s: a quarter of a 64-bit block is 27 ms). A break
+in the samples or a burst of interference throws it further, and it then sits
+off the carrier for good: the constellation is a ring and nothing decodes.
+`areo.wav` has such a disturbance near 55 s that took out half its carriers.
+
+So each worker watches itself (`Resync` in `channel.rs`): out of lock for 2.5 s
+(1 s at the fast rates), it looks for the line pair again in the last seconds
+of its own samples, as the first acquisition did, and moves the oscillator
+there if the carrier is plain (strength 4.5) and more than 2 Hz from where the
+loop is. It tries again every 4 s (1.5 s). Burst channels are left alone. The
+Signalling log says "carrier found again" with how far the loop had gone.
+
+Measured: `areo.wav` played round and round for 200 s, all 20 carriers locked
+at the end (before: about 4). JAERO's 600 bit/s sample, whose carriers wander:
+368 of 408 units good on its two carriers (before: 118 of 174).
+
+Two things found on the way, both on a receiver's audio recorded at 192 kS/s:
+the survey's noise floor was taken from the silence outside the audio, so the
+whole audio band counted as one wide carrier (now only bins within 45 dB of
+the strongest count); and the deep scan found the one strong carrier again in
+every channel of its filter bank, moved by whole steps of half the channel's
+sample rate (now recognised as an echo of a carrier already being decoded).
+
 ## Feeds out
 
 `decaero-engine/src/feed.rs`, after JAERO (`mainwindow.cpp`, `sbs1.cpp`). One

@@ -25,13 +25,17 @@ fn main() {
         station: value("--station"),
     };
     // A URL is a live input, run for `--seconds N` (30 by default).
-    let live = path.contains("://");
+    // `--repeat` plays a recording round and round until `--seconds`, as
+    // the GUI does (the join is a jump in phase and timing).
+    let repeat = args.iter().any(|a| a == "--repeat");
+    let net = path.contains("://");
+    let live = net || repeat;
     let seconds: f64 = args
         .windows(2)
         .find(|w| w[0] == "--seconds")
         .and_then(|w| w[1].parse().ok())
         .unwrap_or(30.0);
-    let source: Box<dyn decaero_engine::Source> = if live {
+    let source: Box<dyn decaero_engine::Source> = if net {
         let rate = args
             .windows(2)
             .find(|w| w[0] == "--rate")
@@ -48,7 +52,7 @@ fn main() {
         };
         Box::new(decaero_engine::net::open(path, rate, format, options).expect("connect"))
     } else {
-        Box::new(FileSource::open(std::path::Path::new(path), false).expect("open the recording"))
+        Box::new(FileSource::open(std::path::Path::new(path), repeat).expect("open the recording"))
     };
     let engine = Engine::start(
         source,
