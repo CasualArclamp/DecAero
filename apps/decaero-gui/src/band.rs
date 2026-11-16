@@ -1,17 +1,20 @@
 // made by CasualArclamp
 //! The band: spectrum on top, waterfall under it, a mark for every decoder.
-//! Laid out as DecSAT's band view (spectrum a third of the height, an axis
-//! strip, the waterfall), drawn by hand.
+//! Laid out and handled as DecSAT's band view (`band_view.rs`): spectrum a
+//! third of the height, an axis strip, the waterfall; the wheel zooms about
+//! the cursor (with egui's smoothed scroll, so it glides), right- or
+//! middle-drag pans.
 
 use crate::theme::*;
 use decaero_engine::View;
 use decaero_engine::channel::{ChannelId, Kind};
 use eframe::egui::{
-    self, Align2, Color32, ColorImage, FontId, Stroke, TextureHandle, TextureOptions, Ui, pos2,
-    vec2,
+    self, Align2, Color32, ColorImage, CursorIcon, FontId, PointerButton, Stroke, TextureHandle,
+    TextureOptions, Ui, pos2, vec2,
 };
+use std::collections::VecDeque;
 
-/// Waterfall texture size: columns across the band, rows of history.
+/// Waterfall texture size: columns across the view, rows of history.
 const COLS: usize = 2048;
 const ROWS: usize = 300;
 
@@ -22,18 +25,30 @@ pub enum Action {
 }
 
 pub struct Band {
+    /// History at full resolution, newest first, each with the noise floor
+    /// it was taken at: zooming in redraws from these, so it stays sharp.
+    rows: VecDeque<(f32, Vec<f32>)>,
     pixels: Vec<Color32>,
     texture: Option<TextureHandle>,
     palette: Vec<Color32>,
     dirty: bool,
+    /// The view, in Hz from the centre of the input.
+    lo: f64,
+    hi: f64,
+    /// The whole band (the input's sample rate).
+    span: f64,
 }
 
-/// The strongest bin under each of `cols` columns.
-fn columns(row: &[f32], cols: usize) -> Vec<f32> {
+/// The strongest bin under each of `cols` columns, for the part of `row`
+/// between the fractions `from` and `to` of its length.
+fn columns(row: &[f32], cols: usize, from: f64, to: f64) -> Vec<f32> {
+    let n = row.len() as f64;
     (0..cols)
         .map(|c| {
-            let a = c * row.len() / cols;
-            let b = ((c + 1) * row.len() / cols).max(a + 1).min(row.len());
+            let a = ((from + (to - from) * c as f64 / cols as f64) * n) as usize;
+            let b = ((from + (to - from) * (c + 1) as f64 / cols as f64) * n).ceil() as usize;
+            let a = a.min(row.len() - 1);
+            let b = b.clamp(a + 1, row.len());
             row[a..b].iter().copied().fold(f32::MIN, f32::max)
         })
         .collect()
@@ -42,32 +57,51 @@ fn columns(row: &[f32], cols: usize) -> Vec<f32> {
 impl Band {
     pub fn new() -> Self {
         Self {
+            rows: VecDeque::new(),
             pixels: vec![Color32::from_rgb(0, 0, 4); COLS * ROWS],
             texture: None,
             palette: palette(),
             dirty: true,
+            lo: -0.5,
+            hi: 0.5,
+            span: 1.0,
         }
     }
 
     pub fn clear(&mut self) {
-        self.pixels.fill(Color32::from_rgb(0, 0, 4));
+        self.rows.clear();
+        self.span = 1.0;
         self.dirty = true;
     }
 
-    /// New rows go in at the top; older ones move down.
     pub fn push_rows(&mut self, rows: impl Iterator<Item = Vec<f32>>, floor_db: f32) {
-        // From a little under the floor to 22 dB over it.
-        let (lo, hi) = (floor_db - 3.0, floor_db + 22.0);
-        for row in rows {
-            if row.is_empty() {
-                continue;
-            }
-            self.pixels.copy_within(..COLS * (ROWS - 1), COLS);
-            for (px, v) in self.pixels[..COLS].iter_mut().zip(columns(&row, COLS)) {
+        for row in rows.filter(|r| !r.is_empty()) {
+            self.rows.push_front((floor_db, row));
+            self.dirty = true;
+        }
+        self.rows.truncate(ROWS);
+    }
+
+    fn clamp_view(&mut self) {
+        let w = (self.hi - self.lo).min(self.span);
+        self.lo = self.lo.clamp(-self.span / 2.0, self.span / 2.0 - w);
+        self.hi = self.lo + w;
+    }
+
+    /// Redraw the waterfall's pixels for the current view.
+    fn render(&mut self) {
+        let (from, to) = ((self.lo / self.span + 0.5), (self.hi / self.span + 0.5));
+        self.pixels.fill(Color32::from_rgb(0, 0, 4));
+        for (r, (floor, row)) in self.rows.iter().enumerate() {
+            // From a little under the floor to 22 dB over it.
+            let (lo, hi) = (floor - 3.0, floor + 22.0);
+            for (px, v) in self.pixels[r * COLS..(r + 1) * COLS]
+                .iter_mut()
+                .zip(columns(row, COLS, from, to))
+            {
                 let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                 *px = self.palette[(t * 255.0) as usize];
             }
-            self.dirty = true;
         }
     }
 
@@ -79,6 +113,52 @@ impl Band {
         view: &View,
         selected: Option<ChannelId>,
     ) -> Action {
+        // A new input (or the first one): show all of it.
+        let rate = view.rate.max(1.0);
+        if (self.span - rate).abs() > 1e-6 {
+            self.span = rate;
+            self.lo = -rate / 2.0;
+            self.hi = rate / 2.0;
+            self.dirty = true;
+        }
+        let (lo, hi) = (self.lo, self.hi);
+        let hz_at =
+            |x: f32, lo: f64, hi: f64| lo + f64::from((x - rect.left()) / rect.width()) * (hi - lo);
+
+        // Zoom about the cursor (DecSAT's: the smoothed wheel, so it glides).
+        // It stops at 32 bins across the view: past that the waterfall is
+        // all blocks.
+        let bins = view.spectrum_db.len().max(64) as f64;
+        let min_view = (rate / bins * 32.0).max(1.0);
+        if let Some(p) = response.hover_pos() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll != 0.0 {
+                let f = (-f64::from(scroll) * 0.002).exp();
+                let c = hz_at(p.x, lo, hi);
+                let new_w = ((hi - lo) * f).clamp(min_view, self.span);
+                let frac = (c - lo) / (hi - lo);
+                self.lo = c - frac * new_w;
+                self.hi = self.lo + new_w;
+                self.clamp_view();
+                self.dirty = true;
+            }
+        }
+        // Pan: the spectrum follows the mouse.
+        if response.dragged_by(PointerButton::Secondary)
+            || response.dragged_by(PointerButton::Middle)
+        {
+            let d = f64::from(response.drag_delta().x / rect.width()) * (hi - lo);
+            self.lo -= d;
+            self.hi -= d;
+            self.clamp_view();
+            self.dirty = true;
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        }
+        // The view may have just moved: draw with the new one.
+        let (lo, hi) = (self.lo, self.hi);
+        let x_of = |hz: f64| rect.left() + ((hz - lo) / (hi - lo)) as f32 * rect.width();
+        let (from, to) = (lo / rate + 0.5, hi / rate + 0.5);
+
         let painter = ui.painter_at(rect);
         let spec_h = (rect.height() * 0.34).clamp(90.0, 320.0);
         let spec = egui::Rect::from_min_size(rect.min, vec2(rect.width(), spec_h));
@@ -89,6 +169,7 @@ impl Band {
         painter.rect_filled(wf, 0, Color32::from_rgb(0, 0, 4));
 
         if self.dirty {
+            self.render();
             let image = ColorImage::new([COLS, ROWS], self.pixels.clone());
             match &mut self.texture {
                 Some(t) => t.set(image, TextureOptions::LINEAR),
@@ -110,32 +191,31 @@ impl Band {
                 Color32::WHITE,
             );
         }
-        let rate = view.rate.max(1.0);
-        let x_of = |hz: f64| rect.left() + ((hz / rate + 0.5) as f32) * rect.width();
-        let hz_of = |x: f32| (f64::from((x - rect.left()) / rect.width()) - 0.5) * rate;
 
         // Spectrum trace: floor - 5 dB at the bottom, 30 dB of range.
         let font = FontId::proportional(10.0);
         if !view.spectrum_db.is_empty() {
-            let (lo, hi) = (view.floor_db - 5.0, view.floor_db + 25.0);
-            let y_of =
-                |db: f32| spec.bottom() - ((db - lo) / (hi - lo)).clamp(0.0, 1.0) * spec.height();
+            let (bottom, top) = (view.floor_db - 5.0, view.floor_db + 25.0);
+            let y_of = |db: f32| {
+                spec.bottom() - ((db - bottom) / (top - bottom)).clamp(0.0, 1.0) * spec.height()
+            };
             for step in [0.0f32, 10.0, 20.0] {
                 let y = y_of(view.floor_db + step);
                 painter.line_segment(
                     [pos2(spec.left(), y), pos2(spec.right(), y)],
                     Stroke::new(1.0, GRID),
                 );
+                let label = format!("{:.0} dB", view.floor_db + step);
                 painter.text(
                     pos2(spec.left() + 4.0, y - 1.0),
                     Align2::LEFT_BOTTOM,
-                    format!("{:.0} dB", view.floor_db + step),
+                    label,
                     font.clone(),
                     FAINT,
                 );
             }
             let n = (spec.width() as usize).clamp(16, 4096);
-            let points: Vec<egui::Pos2> = columns(&view.spectrum_db, n)
+            let points: Vec<egui::Pos2> = columns(&view.spectrum_db, n, from, to)
                 .into_iter()
                 .enumerate()
                 .map(|(i, db)| {
@@ -159,20 +239,26 @@ impl Band {
             painter.add(egui::Shape::line(points, Stroke::new(1.2, TRACE)));
         }
 
-        // Frequency axis: about eight labels.
-        let step = [1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5, 1e6]
-            .into_iter()
-            .find(|s| rate / s <= 9.0)
-            .unwrap_or(1e6);
-        let mut hz = (-rate / 2.0 / step).ceil() * step;
-        while hz < rate / 2.0 {
+        // Frequency axis: about eight labels across the view.
+        let width_hz = hi - lo;
+        let step = [
+            100.0, 200.0, 500.0, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5, 1e6,
+        ]
+        .into_iter()
+        .find(|s| width_hz / s <= 9.0)
+        .unwrap_or(1e6);
+        let mut hz = (lo / step).ceil() * step;
+        while hz < hi {
             let x = x_of(hz);
             painter.line_segment(
                 [pos2(x, axis.top()), pos2(x, axis.top() + 4.0)],
                 Stroke::new(1.0, FAINT),
             );
             let label = if view.center_hz > 0.0 {
-                format!("{:.3}", (view.center_hz + hz) / 1e6)
+                let decimals = if step < 1e3 { 4 } else { 3 };
+                format!("{:.*}", decimals, (view.center_hz + hz) / 1e6)
+            } else if step < 1e3 {
+                format!("{:+.1}k", hz / 1e3)
             } else {
                 format!("{:+.0}k", hz / 1e3)
             };
@@ -197,6 +283,9 @@ impl Band {
                 Kind::Searching | Kind::NotAero => 1500.0,
                 _ => 7000.0,
             };
+            if c.carrier_hz + width / 2.0 < lo || c.carrier_hz - width / 2.0 > hi {
+                continue;
+            }
             let colour = match (c.kind, c.locked) {
                 _ if c.closed => FAINT,
                 (Kind::NotAero | Kind::Ended, _) => FAINT,
@@ -205,10 +294,8 @@ impl Band {
                 (Kind::C, true) => VFO,
                 (Kind::P(_), true) => AMBER,
             };
-            let (a, b) = (
-                x_of(c.carrier_hz - width / 2.0),
-                x_of(c.carrier_hz + width / 2.0).max(x_of(c.carrier_hz - width / 2.0) + 3.0),
-            );
+            let a = x_of(c.carrier_hz - width / 2.0);
+            let b = x_of(c.carrier_hz + width / 2.0).max(a + 3.0);
             let on = selected == Some(c.id);
             // Edges on the spectrum only, a tint over the waterfall: a narrow
             // carrier must stay visible under its mark.
@@ -267,10 +354,24 @@ impl Band {
             painter.rect_filled(at, 2, colour);
             painter.galley(pos2(at.left() + 4.0, at.top()), galley, Color32::BLACK);
         }
+        // How far in the view is, when it is not the whole band.
+        if width_hz < self.span * 0.999 {
+            let text = format!(
+                "{:.1} kHz across · wheel zooms, right-drag pans",
+                width_hz / 1e3
+            );
+            painter.text(
+                pos2(spec.right() - 6.0, spec.bottom() - 3.0),
+                Align2::RIGHT_BOTTOM,
+                text,
+                font,
+                DIM,
+            );
+        }
 
         // Clicks.
         if let Some(p) = response.interact_pointer_pos() {
-            let hz = hz_of(p.x);
+            let hz = hz_at(p.x, lo, hi);
             if response.double_clicked() {
                 return Action::Add {
                     offset_hz: hz,
@@ -278,7 +379,8 @@ impl Band {
                 };
             }
             if response.clicked() {
-                let reach = f64::from(8.0 / rect.width()) * rate + 4000.0;
+                // Within eight pixels of the carrier, or inside a wide one's mark.
+                let reach = 8.0 / f64::from(rect.width()) * width_hz;
                 if let Some(c) = view
                     .channels
                     .iter()
@@ -287,7 +389,10 @@ impl Band {
                             .abs()
                             .total_cmp(&(b.carrier_hz - hz).abs())
                     })
-                    .filter(|c| (c.carrier_hz - hz).abs() < reach)
+                    .filter(|c| {
+                        (c.carrier_hz - hz).abs()
+                            < reach + if c.kind == Kind::C { 3500.0 } else { 600.0 }
+                    })
                 {
                     return Action::Select(c.id);
                 }

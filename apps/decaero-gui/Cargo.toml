@@ -24,6 +24,9 @@ rfd = "0.17.2"
 # Call recordings: libopus (built from source by the crate, needs CMake) in an Ogg file.
 opus = "0.4.0"
 ogg = "0.9.2"
+# The aircraft database: a gzip file fetched over HTTPS when the user asks.
+flate2 = "1"
+ureq = "3"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [lints]

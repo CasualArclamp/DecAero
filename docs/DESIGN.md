@@ -122,11 +122,14 @@ Square, redrawn at 60 frames a second, small dots.
 4. GUI, three columns. **Done** (`cargo run --release -p decaero-gui -- FILE.wav --center MHZ`).
 5. Call recording to Ogg Opus. **Done** (Documents\DecAero\calls, or `--out-dir`).
 
+6. Aircraft lookup (tar1090-db's aircraft.csv.gz, fetched on a click into the
+   settings folder), state of registry from the address, All / US / Military
+   filters; wheel zoom and right-drag pan on the band as in DecSAT. **Done.**
+
 Still to do, roughly in this order:
 
 - R and T channel bursts (C-band side).
 - Tone frames synthesised (ringback is silent now).
-- Aircraft lookup from a downloaded database, the US / military filters.
 - JAERO-style ACARS / ADS-C feeds out (JSON over UDP, SBS).
 - Channel activity history (the heat map), kept across restarts; call log file.
 - Live inputs: SDR++ server, plain TCP/UDP IQ, decsat-server; prefs file.

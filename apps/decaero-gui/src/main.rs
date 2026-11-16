@@ -9,6 +9,7 @@
 //!
 //! `decaero-gui [FILE.wav] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
 
+mod aircraft;
 mod audio;
 mod band;
 mod recorder;
@@ -33,6 +34,14 @@ const TRAIL: usize = 1800;
 enum Tab {
     Messages,
     Signalling,
+}
+
+/// Which aircraft to list.
+#[derive(PartialEq, Clone, Copy)]
+enum Filter {
+    All,
+    Us,
+    Military,
 }
 
 struct Shot {
@@ -66,6 +75,9 @@ struct App {
     shot: Option<Shot>,
     started: Instant,
     error: Option<String>,
+    aircraft: aircraft::Lookup,
+    /// Which aircraft the right-hand table shows.
+    filter: Filter,
 }
 
 impl App {
@@ -526,8 +538,19 @@ impl App {
             &[
                 (
                     "Aircraft",
-                    c.aes.map_or("–".into(), |a| format!("{a:06X}")),
+                    c.aes.map_or("–".into(), |a| self.who(a)),
                     Some(GOOD),
+                ),
+                (
+                    "Type",
+                    c.aes
+                        .map_or(String::new(), |a| self.aircraft.get(a).description),
+                    None,
+                ),
+                (
+                    "Operator",
+                    c.aes.map_or(String::new(), |a| self.aircraft.get(a).owner),
+                    None,
                 ),
                 (
                     "Ground",
@@ -602,6 +625,13 @@ impl App {
                                     .monospace()
                                     .size(11.0),
                             );
+                            let info = self.aircraft.get(a);
+                            if !info.short().is_empty() {
+                                ui.label(RichText::new(info.short()).color(TEXT).size(11.0));
+                            }
+                            if info.military {
+                                chip(ui, "MIL", AMBER);
+                            }
                         }
                         ui.label(
                             RichText::new(&l.title)
@@ -624,7 +654,58 @@ impl App {
                 }
             });
         ui.separator();
-        ui.label(RichText::new("Aircraft seen").color(WHITE).size(14.0));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Aircraft seen").color(WHITE).size(14.0));
+            ui.selectable_value(&mut self.filter, Filter::All, "All");
+            ui.selectable_value(&mut self.filter, Filter::Us, "US");
+            ui.selectable_value(&mut self.filter, Filter::Military, "Military");
+        });
+        // The database is fetched only when asked for.
+        match self.aircraft.state() {
+            aircraft::State::Missing => {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Get the aircraft database")
+                        .on_hover_text(aircraft::DATABASE_URL)
+                        .clicked()
+                    {
+                        self.aircraft.download();
+                    }
+                    ui.label(
+                        RichText::new("9 MB, for registrations and types")
+                            .color(DIM)
+                            .size(11.0),
+                    );
+                });
+            }
+            aircraft::State::Downloading => {
+                ui.label(
+                    RichText::new("fetching the aircraft database…")
+                        .color(WARN)
+                        .size(11.0),
+                );
+            }
+            aircraft::State::Loading => {
+                ui.label(
+                    RichText::new("reading the aircraft database…")
+                        .color(DIM)
+                        .size(11.0),
+                );
+            }
+            aircraft::State::Failed(e) => {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("aircraft database: {e}"))
+                            .color(BAD)
+                            .size(11.0),
+                    );
+                    if ui.small_button("retry").clicked() {
+                        self.aircraft.download();
+                    }
+                });
+            }
+            aircraft::State::Ready { .. } => {}
+        }
         // Newest first, one line per aircraft.
         let mut seen: Vec<(u32, f64, &str, usize)> = Vec::new();
         for l in self.log.iter().rev() {
@@ -634,23 +715,46 @@ impl App {
                 None => seen.push((aes, l.seconds, l.title.as_str(), 1)),
             }
         }
+        let filter = self.filter;
         egui::ScrollArea::vertical()
             .id_salt("aircraft")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("aircraft-table")
-                    .num_columns(4)
-                    .spacing([10.0, 2.0])
+                    .num_columns(6)
+                    .spacing([8.0, 2.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        for h in ["AES", "last", "units", "what"] {
+                        for h in ["AES", "reg", "type", "", "last", "what"] {
                             ui.label(RichText::new(h).color(DIM).size(11.0));
                         }
                         ui.end_row();
-                        for (aes, seconds, what, n) in seen.iter().take(200) {
+                        let mut shown = 0;
+                        for (aes, seconds, what, _n) in &seen {
+                            let info = self.aircraft.get(*aes);
+                            let keep = match filter {
+                                Filter::All => true,
+                                Filter::Us => info.country == "US",
+                                Filter::Military => info.military,
+                            };
+                            if !keep {
+                                continue;
+                            }
+                            shown += 1;
+                            if shown > 200 {
+                                break;
+                            }
                             ui.label(RichText::new(format!("{aes:06X}")).color(GOOD).monospace());
+                            ui.label(&info.registration);
+                            ui.label(RichText::new(&info.type_code).size(11.0))
+                                .on_hover_text(format!("{}\n{}", info.description, info.owner));
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(info.country).color(DIM).size(11.0));
+                                if info.military {
+                                    chip(ui, "MIL", AMBER);
+                                }
+                            });
                             ui.label(RichText::new(clock(*seconds)).monospace().size(11.0));
-                            ui.label(n.to_string());
                             ui.label(RichText::new(*what).size(11.0));
                             ui.end_row();
                         }
@@ -658,11 +762,27 @@ impl App {
             });
     }
 
+    /// An aircraft in one line: address, registration, type, state.
+    fn who(&self, aes: u32) -> String {
+        let info = self.aircraft.get(aes);
+        let mut text = format!("{aes:06X}");
+        for part in [info.short(), info.country.to_string()] {
+            if !part.is_empty() {
+                text.push_str("  ");
+                text.push_str(&part);
+            }
+        }
+        if info.military {
+            text.push_str("  MIL");
+        }
+        text
+    }
+
     fn centre(&mut self, ui: &mut Ui) {
         let total = ui.available_height();
         let band_h = (total * 0.62).max(220.0);
         let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), band_h), Sense::click());
+            ui.allocate_exact_size(vec2(ui.available_width(), band_h), Sense::click_and_drag());
         let action = self
             .band
             .show(ui, rect, &response, &self.view, self.selected);
@@ -703,7 +823,7 @@ impl App {
                                 RichText::new(format!("{:+.2}", call.carrier_hz / 1e3)).monospace(),
                             );
                             ui.label(
-                                RichText::new(call.aes.map_or("–".into(), |a| format!("{a:06X}")))
+                                RichText::new(call.aes.map_or("–".into(), |a| self.who(a)))
                                     .color(GOOD)
                                     .monospace(),
                             );
@@ -975,6 +1095,7 @@ fn main() -> eframe::Result {
     let mut after = 8.0;
     let mut select_hz = None;
     let mut out_dir = None;
+    let mut aircraft_db = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--center" => center_text = args.next().unwrap_or_default(),
@@ -983,6 +1104,7 @@ fn main() -> eframe::Result {
             "--after" => after = args.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
             "--out-dir" => out_dir = args.next().map(PathBuf::from),
+            "--aircraft-db" => aircraft_db = args.next().map(PathBuf::from),
             _ => file = Some(PathBuf::from(a)),
         }
     }
@@ -1040,6 +1162,10 @@ fn main() -> eframe::Result {
                 }),
                 started: Instant::now(),
                 error: None,
+                aircraft: aircraft::Lookup::new(
+                    aircraft_db.unwrap_or_else(aircraft::Lookup::default_path),
+                ),
+                filter: Filter::All,
             };
             if let Some(f) = &file {
                 app.open(f);

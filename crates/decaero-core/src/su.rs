@@ -227,10 +227,11 @@ impl Reassembler {
         // A following unit counts down: it belongs to the data that expects
         // its number next.
         let (seq, q_no, ref_no) = (b[0] & 0x3f, b[1] >> 4, b[1] & 0x0f);
+        // The newest data that fits: its followers come straight after it.
         let i = self
             .partial
             .iter()
-            .position(|p| p.q_no == q_no && p.ref_no == ref_no && p.remaining == seq + 1)?;
+            .rposition(|p| p.q_no == q_no && p.ref_no == ref_no && p.remaining == seq + 1)?;
         let p = &mut self.partial[i];
         p.remaining -= 1;
         if p.remaining > 0 {
