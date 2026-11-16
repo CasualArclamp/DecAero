@@ -147,6 +147,10 @@ pub struct LogLine {
     pub message: bool,
 }
 
+/// Waterfall rows made from each block of samples (a block is a twentieth
+/// of a second).
+const ROWS_PER_BLOCK: usize = 3;
+
 /// One voice call, for the calls table and the activity map.
 #[derive(Debug, Clone)]
 pub struct Call {
@@ -541,30 +545,32 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         blocks += 1;
         seconds += block.len() as f64 / rate;
 
-        // One waterfall row per block: the block's segments averaged.
-        let mut power = vec![0f32; n];
-        let mut segments = 0;
+        // Three waterfall rows per block (60 a second, one for every frame
+        // the screen draws): each from the newest samples, a third of a block
+        // on from the last, so the transforms overlap where they are longer
+        // than that. Shorter ones are averaged over the step.
         fft_in.extend_from_slice(&block);
-        let whole = fft_in.len() / n * n;
-        for seg in fft_in[..whole].chunks_exact(n) {
-            for ((b, &s), &w) in buf.iter_mut().zip(seg).zip(&window) {
-                *b = s * w;
+        let step = (block_len / ROWS_PER_BLOCK).max(1);
+        let segments = (step / n).max(1);
+        while fft_in.len() >= segments * n {
+            let mut power = vec![0f32; n];
+            for seg in fft_in[..segments * n].chunks_exact(n) {
+                for ((b, &s), &w) in buf.iter_mut().zip(seg).zip(&window) {
+                    *b = s * w;
+                }
+                fft.process(&mut buf);
+                for (p, b) in power.iter_mut().zip(&buf) {
+                    *p += b.norm_sqr();
+                }
             }
-            fft.process(&mut buf);
-            for (p, b) in power.iter_mut().zip(&buf) {
-                *p += b.norm_sqr();
-            }
-            segments += 1;
-        }
-        fft_in.drain(..whole);
-        if segments > 0 {
+            fft_in.drain(..step.min(fft_in.len()));
             let scale = 1.0 / (segments as f32 * n as f32 * n as f32 * 0.375);
             let row: Vec<f32> = (0..n)
                 .map(|i| 10.0 * (power[(i + n / 2) % n] * scale).max(1e-20).log10())
                 .collect();
             if have_average {
                 for (a, &r) in average.iter_mut().zip(&row) {
-                    *a += 0.08 * (r - *a);
+                    *a += 0.08 / ROWS_PER_BLOCK as f32 * (r - *a);
                 }
             } else {
                 average.clone_from(&row);

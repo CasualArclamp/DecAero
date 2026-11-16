@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--view LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
 mod activity;
 mod aircraft;
@@ -76,6 +76,9 @@ struct Shot {
     path: PathBuf,
     after: f64,
     requested: Option<Instant>,
+    /// Frames drawn and the time they took, for a line on how evenly the
+    /// window was drawn: (frames, seconds, longest frame, frames over 25 ms).
+    frames: (u32, f32, f32, u32),
 }
 
 struct App {
@@ -547,6 +550,12 @@ impl App {
 
     fn screenshot(&mut self, ctx: &egui::Context) {
         let Some(shot) = &mut self.shot else { return };
+        // The first seconds (start-up, textures being made) are left out.
+        let dt = ctx.input(|i| i.unstable_dt);
+        if self.started.elapsed().as_secs_f32() > 3.0 && shot.requested.is_none() {
+            let f = &mut shot.frames;
+            *f = (f.0 + 1, f.1 + dt, f.2.max(dt), f.3 + u32::from(dt > 0.025));
+        }
         let image = ctx.input(|i| {
             i.raw.events.iter().find_map(|e| match e {
                 egui::Event::Screenshot { image, .. } => Some(image.clone()),
@@ -562,7 +571,15 @@ impl App {
                 image.size[1] as u32,
                 image::ColorType::Rgba8,
             ) {
-                Ok(()) => eprintln!("screenshot saved to {}", shot.path.display()),
+                Ok(()) => {
+                    let (n, total, worst, slow) = shot.frames;
+                    eprintln!(
+                        "frames: {n}, mean {:.1} ms, longest {:.1} ms, {slow} over 25 ms",
+                        total / n.max(1) as f32 * 1e3,
+                        worst * 1e3
+                    );
+                    eprintln!("screenshot saved to {}", shot.path.display())
+                }
                 Err(e) => eprintln!("cannot save {}: {e}", shot.path.display()),
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1682,6 +1699,7 @@ fn main() -> eframe::Result {
     let mut shot_path = None;
     let mut after = 8.0;
     let mut select_hz = None;
+    let mut view_arg: Option<(f64, f64)> = None;
     let mut out_dir = None;
     let mut aircraft_db = None;
     let mut net_url = None;
@@ -1702,6 +1720,12 @@ fn main() -> eframe::Result {
             "--screenshot" => shot_path = args.next().map(PathBuf::from),
             "--after" => after = args.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
+            "--view" => {
+                view_arg = args.next().and_then(|v| {
+                    let (lo, hi) = v.split_once(':')?;
+                    Some((lo.parse().ok()?, hi.parse().ok()?))
+                })
+            }
             "--out-dir" => out_dir = args.next().map(PathBuf::from),
             "--aircraft-db" => aircraft_db = args.next().map(PathBuf::from),
             "--json-udp" => feeds.json_udp = args.next().unwrap_or_default(),
@@ -1788,6 +1812,7 @@ fn main() -> eframe::Result {
                     path,
                     after,
                     requested: None,
+                    frames: (0, 0.0, 0.0, 0),
                 }),
                 started: Instant::now(),
                 error: None,
@@ -1847,6 +1872,7 @@ fn main() -> eframe::Result {
                 .iter()
                 .position(|r| r.key == "airspy")
                 .unwrap_or(0);
+            app.band.want_view = view_arg;
             app.pick_radio(usual);
             app.recall(&given);
             if let Some(f) = &file {

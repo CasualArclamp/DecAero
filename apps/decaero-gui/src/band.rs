@@ -10,13 +10,27 @@ use decaero_engine::View;
 use decaero_engine::channel::{ChannelId, Kind};
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CursorIcon, FontId, PointerButton, Stroke, TextureHandle,
-    TextureOptions, Ui, pos2, vec2,
+    TextureOptions, TextureWrapMode, Ui, pos2, vec2,
 };
 use std::collections::VecDeque;
 
-/// Waterfall texture size: columns across the view, rows of history.
-const COLS: usize = 2048;
-const ROWS: usize = 300;
+/// Rows of history kept, which is also the height of the texture: a ring,
+/// as DecSAT's (`waterfall.rs`), so a new row is one small upload and the
+/// picture is moved by shifting the texture coordinates.
+const RING: usize = 1024;
+/// The waterfall has at most this many rows on screen; on a taller one each
+/// row is two or more screen pixels high (always a whole number).
+const MAX_ROWS: usize = 900;
+/// Rows that may be waiting above the top edge to slide in.
+const WAITING: usize = 16;
+/// Unfiltered (a texel is a whole number of screen pixels), repeating
+/// vertically for the ring's wrap-round.
+const OPTIONS: TextureOptions = TextureOptions {
+    wrap_mode: TextureWrapMode::Repeat,
+    ..TextureOptions::NEAREST
+};
+/// Behind the waterfall.
+const DARK: Color32 = Color32::from_rgb(0, 0, 4);
 
 pub enum Action {
     None,
@@ -32,8 +46,23 @@ pub struct Band {
     /// History at full resolution, newest first, each with the noise floor
     /// it was taken at: zooming in redraws from these, so it stays sharp.
     rows: VecDeque<(f32, Vec<f32>)>,
-    pixels: Vec<Color32>,
+    /// Columns of the texture (one a screen pixel, so nothing is resampled)
+    /// and rows on screen.
+    size: [usize; 2],
+    /// Screen pixels to a row.
+    thick: usize,
     texture: Option<TextureHandle>,
+    /// The texture row holding the newest row, and how many rows have come
+    /// since the texture was last brought up to date.
+    head: usize,
+    fresh: usize,
+    /// Rows arrive in clumps (three with every block of samples), so they
+    /// are let in at a steady pace instead: `waiting` rows (and a fraction)
+    /// are still above the top edge, sliding in at `pace` rows a second.
+    waiting: f32,
+    pace: f32,
+    /// For measuring the pace: rows and seconds since it was last worked out.
+    counted: (f32, f32),
     palette: Vec<Color32>,
     dirty: bool,
     /// The view, in Hz from the centre of the input.
@@ -43,28 +72,78 @@ pub struct Band {
     span: f64,
     /// Where a left-button drag began (Hz): a new decoder's box is being drawn.
     drag_from: Option<f64>,
+    /// A view asked for on the command line, taken once the input is known.
+    pub want_view: Option<(f64, f64)>,
 }
 
-/// The strongest bin under each of `cols` columns, for the part of `row`
-/// between the fractions `from` and `to` of its length.
-fn columns(row: &[f32], cols: usize, from: f64, to: f64) -> Vec<f32> {
-    let n = row.len() as f64;
+/// How one column of the picture is read from a row of bins.
+#[derive(Clone, Copy)]
+enum Column {
+    /// Several bins under the column: the strongest (a narrow carrier must
+    /// not fall between columns).
+    Peak(usize, usize),
+    /// Zoomed in past one bin a column: between two bins, by this weight
+    /// (as DecSAT's waterfall, which the graphics card interpolates).
+    Between(usize, usize, f32),
+}
+
+/// The columns for `cols` across the part of a row of `n` bins between the
+/// fractions `from` and `to` of its length.
+fn plan(n: usize, cols: usize, from: f64, to: f64) -> Vec<Column> {
+    let per_col = (to - from) * n as f64 / cols as f64;
     (0..cols)
         .map(|c| {
-            let a = ((from + (to - from) * c as f64 / cols as f64) * n) as usize;
-            let b = ((from + (to - from) * (c + 1) as f64 / cols as f64) * n).ceil() as usize;
-            let a = a.min(row.len() - 1);
-            let b = b.clamp(a + 1, row.len());
-            row[a..b].iter().copied().fold(f32::MIN, f32::max)
+            if per_col < 1.0 {
+                // The column's middle, counted in bins from the first bin's middle.
+                let at = ((from * n as f64 + (c as f64 + 0.5) * per_col) - 0.5)
+                    .clamp(0.0, (n - 1) as f64);
+                let a = at as usize;
+                Column::Between(a, (a + 1).min(n - 1), (at - a as f64) as f32)
+            } else {
+                let a = ((from * n as f64 + c as f64 * per_col) as usize).min(n - 1);
+                let b = (from * n as f64 + (c + 1) as f64 * per_col).ceil() as usize;
+                Column::Peak(a, b.clamp(a + 1, n))
+            }
         })
         .collect()
+}
+
+fn read(row: &[f32], column: Column) -> f32 {
+    match column {
+        Column::Peak(a, b) => row[a..b].iter().copied().fold(f32::MIN, f32::max),
+        Column::Between(a, b, w) => row[a] + (row[b] - row[a]) * w,
+    }
+}
+
+/// `cols` values across part of a row (see `plan`).
+fn columns(row: &[f32], cols: usize, from: f64, to: f64) -> Vec<f32> {
+    plan(row.len(), cols, from, to)
+        .into_iter()
+        .map(|c| read(row, c))
+        .collect()
+}
+
+/// To the nearest screen pixel edge.
+fn snap(v: f32, ppp: f32) -> f32 {
+    (v * ppp).round() / ppp
+}
+
+/// To the middle of a screen pixel: where a one-pixel line is sharp.
+fn mid(v: f32, ppp: f32) -> f32 {
+    ((v * ppp).floor() + 0.5) / ppp
 }
 
 impl Band {
     pub fn new() -> Self {
         Self {
             rows: VecDeque::new(),
-            pixels: vec![Color32::from_rgb(0, 0, 4); COLS * ROWS],
+            size: [0, 0],
+            thick: 1,
+            head: 0,
+            fresh: 0,
+            waiting: 0.0,
+            pace: 60.0,
+            counted: (0.0, 0.0),
             texture: None,
             palette: palette(),
             dirty: true,
@@ -72,6 +151,7 @@ impl Band {
             hi: 0.5,
             span: 1.0,
             drag_from: None,
+            want_view: None,
         }
     }
 
@@ -84,9 +164,11 @@ impl Band {
     pub fn push_rows(&mut self, rows: impl Iterator<Item = Vec<f32>>, floor_db: f32) {
         for row in rows.filter(|r| !r.is_empty()) {
             self.rows.push_front((floor_db, row));
-            self.dirty = true;
+            self.fresh += 1;
+            self.waiting += 1.0;
+            self.counted.0 += 1.0;
         }
-        self.rows.truncate(ROWS);
+        self.rows.truncate(RING);
     }
 
     fn clamp_view(&mut self) {
@@ -95,21 +177,109 @@ impl Band {
         self.hi = self.lo + w;
     }
 
-    /// Redraw the waterfall's pixels for the current view.
-    fn render(&mut self) {
+    /// The colours of `count` rows, newest first, for the current view.
+    fn render(&self, count: usize) -> Vec<Color32> {
+        let cols = self.size[0];
         let (from, to) = ((self.lo / self.span + 0.5), (self.hi / self.span + 0.5));
-        self.pixels.fill(Color32::from_rgb(0, 0, 4));
-        for (r, (floor, row)) in self.rows.iter().enumerate() {
+        let mut pixels = vec![DARK; cols * count];
+        // Rows are all one length, so the columns are worked out once.
+        let mut planned: Vec<Column> = Vec::new();
+        let mut planned_for = 0;
+        let mut mixed: Vec<f32> = Vec::new();
+        for (r, (line, (floor, row))) in pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate() {
+            let n = row.len();
+            if n != planned_for {
+                planned = plan(n, cols, from, to);
+                planned_for = n;
+            }
+            // Zoomed in, a bin is many pixels wide but a row is still one
+            // high, and every bin of every row is its own draw of the noise:
+            // the picture turns into dashes. So rows are averaged in time
+            // there, more the wider a bin is drawn (a quarter of its width).
+            let bin_px = cols as f64 / ((to - from) * n as f64);
+            let mix = ((bin_px / 4.0 / self.thick as f64).round() as usize).clamp(1, 12);
+            let row = if mix > 1 {
+                let a = ((from * n as f64) as usize).saturating_sub(1);
+                let b = (((to * n as f64).ceil() as usize) + 1).min(n);
+                mixed.clear();
+                mixed.resize(n, 0.0);
+                let mut used = 0.0;
+                for (_, older) in self.rows.iter().skip(r).take(mix) {
+                    if older.len() == n {
+                        for (m, v) in mixed[a..b].iter_mut().zip(&older[a..b]) {
+                            *m += v;
+                        }
+                        used += 1.0;
+                    }
+                }
+                for m in &mut mixed[a..b] {
+                    *m /= used;
+                }
+                &mixed
+            } else {
+                row
+            };
             // From a little under the floor to 22 dB over it.
-            let (lo, hi) = (floor - 3.0, floor + 22.0);
-            for (px, v) in self.pixels[r * COLS..(r + 1) * COLS]
-                .iter_mut()
-                .zip(columns(row, COLS, from, to))
-            {
-                let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
-                *px = self.palette[(t * 255.0) as usize];
+            let (lo, scale) = (floor - 3.0, 255.0 / 25.0);
+            for (px, column) in line.iter_mut().zip(&planned) {
+                let t = ((read(row, *column) - lo) * scale).clamp(0.0, 255.0);
+                *px = self.palette[t as usize];
             }
         }
+        pixels
+    }
+
+    /// Bring the ring texture up to date.
+    fn upload(&mut self, ctx: &egui::Context) {
+        let [cols, shown] = self.size;
+        if self.dirty || self.texture.is_none() || self.fresh >= RING {
+            // The view changed: every row on screen is drawn again.
+            let mut pixels = self.render((shown + WAITING).min(RING));
+            pixels.resize(cols * RING, DARK);
+            let image = ColorImage::new([cols, RING], pixels);
+            match &mut self.texture {
+                Some(t) => t.set(image, OPTIONS),
+                None => self.texture = Some(ctx.load_texture("waterfall", image, OPTIONS)),
+            }
+            self.head = 0;
+        } else if self.fresh > 0 {
+            // Only the new rows, each written just above the last.
+            let pixels = self.render(self.fresh);
+            if let Some(t) = &mut self.texture {
+                for line in pixels.chunks_exact(cols).rev() {
+                    self.head = (self.head + RING - 1) % RING;
+                    t.set_partial(
+                        [0, self.head],
+                        ColorImage::new([cols, 1], line.to_vec()),
+                        OPTIONS,
+                    );
+                }
+            }
+        }
+        self.fresh = 0;
+        self.dirty = false;
+    }
+
+    /// Let waiting rows in at a steady pace; returns how many are still to
+    /// come. `dt` is the time since the last frame.
+    fn pacing(&mut self, dt: f32) -> f32 {
+        // The pace follows how fast rows really come (a recording played
+        // fast brings many more).
+        self.counted.1 += dt;
+        if self.counted.1 >= 0.5 {
+            let measured = self.counted.0 / self.counted.1;
+            self.pace += 0.5 * (measured - self.pace);
+            self.counted = (0.0, 0.0);
+        }
+        if self.waiting > WAITING as f32 {
+            // Far behind (the window was hidden, say): catch up at once.
+            self.waiting = 3.0;
+        }
+        // A little faster with more than three waiting, a little slower with
+        // fewer: it settles one clump behind.
+        let speed = self.pace * (1.0 + 0.15 * (self.waiting - 3.0)).max(0.0);
+        self.waiting = (self.waiting - speed * dt).max(0.0);
+        self.waiting
     }
 
     pub fn show(
@@ -127,8 +297,19 @@ impl Band {
             // A real input shows its upper half: the lower is its mirror.
             self.lo = if view.real { 0.0 } else { -rate / 2.0 };
             self.hi = rate / 2.0;
+            if let Some((lo, hi)) = self.want_view.take() {
+                (self.lo, self.hi) = (lo, hi.max(lo + 1.0));
+                self.clamp_view();
+            }
             self.dirty = true;
         }
+        // Everything sits on whole screen pixels (the window may be scaled:
+        // `ppp` screen pixels to one of egui's points).
+        let ppp = ui.ctx().pixels_per_point();
+        let rect = egui::Rect::from_min_max(
+            pos2(snap(rect.left(), ppp), snap(rect.top(), ppp)),
+            pos2(snap(rect.right(), ppp), snap(rect.bottom(), ppp)),
+        );
         let (lo, hi) = (self.lo, self.hi);
         let hz_at =
             |x: f32, lo: f64, hi: f64| lo + f64::from((x - rect.left()) / rect.width()) * (hi - lo);
@@ -168,34 +349,42 @@ impl Band {
         let (from, to) = (lo / rate + 0.5, hi / rate + 0.5);
 
         let painter = ui.painter_at(rect);
-        let spec_h = (rect.height() * 0.34).clamp(90.0, 320.0);
+        let spec_h = snap((rect.height() * 0.34).clamp(90.0, 320.0), ppp);
         let spec = egui::Rect::from_min_size(rect.min, vec2(rect.width(), spec_h));
-        let axis = egui::Rect::from_min_size(spec.left_bottom(), vec2(rect.width(), 18.0));
+        let axis =
+            egui::Rect::from_min_size(spec.left_bottom(), vec2(rect.width(), snap(18.0, ppp)));
         let wf = egui::Rect::from_min_max(axis.left_bottom(), rect.max);
         painter.rect_filled(spec, 0, WELL);
         painter.rect_filled(axis, 0, AXIS);
-        painter.rect_filled(wf, 0, Color32::from_rgb(0, 0, 4));
+        painter.rect_filled(wf, 0, DARK);
 
-        if self.dirty {
-            self.render();
-            let image = ColorImage::new([COLS, ROWS], self.pixels.clone());
-            match &mut self.texture {
-                Some(t) => t.set(image, TextureOptions::LINEAR),
-                None => {
-                    self.texture = Some(ui.ctx().load_texture(
-                        "waterfall",
-                        image,
-                        TextureOptions::LINEAR,
-                    ))
-                }
-            }
-            self.dirty = false;
+        // One column of the picture to a screen pixel, and each row a whole
+        // number of them, drawn unfiltered: nothing is stretched or blurred.
+        let cols = ((wf.width() * ppp).round() as usize).clamp(16, 8192);
+        let high = (wf.height() * ppp).round().max(1.0) as usize;
+        let thick = high.div_ceil(MAX_ROWS);
+        let shown = (high / thick).max(1);
+        if self.size != [cols, shown] || self.thick != thick {
+            self.size = [cols, shown];
+            self.thick = thick;
+            self.dirty = true;
         }
+        self.upload(ui.ctx());
+        // The picture starts above the top edge by the rows still to come,
+        // in whole screen pixels, so it glides down instead of jumping a
+        // clump of rows at a time.
+        let waiting = self.pacing(ui.input(|i| i.stable_dt).min(0.1));
+        let above = (waiting * thick as f32).round();
         if let Some(t) = &self.texture {
-            painter.image(
+            let rows = shown + WAITING;
+            let v0 = self.head as f32 / RING as f32;
+            ui.painter_at(wf).image(
                 t.id(),
-                wf,
-                egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                egui::Rect::from_min_size(
+                    pos2(wf.left(), wf.top() - above / ppp),
+                    vec2(cols as f32 / ppp, (rows * thick) as f32 / ppp),
+                ),
+                egui::Rect::from_min_max(pos2(0.0, v0), pos2(1.0, v0 + rows as f32 / RING as f32)),
                 Color32::WHITE,
             );
         }
@@ -208,7 +397,7 @@ impl Band {
                 spec.bottom() - ((db - bottom) / (top - bottom)).clamp(0.0, 1.0) * spec.height()
             };
             for step in [0.0f32, 10.0, 20.0] {
-                let y = y_of(view.floor_db + step);
+                let y = mid(y_of(view.floor_db + step), ppp);
                 painter.line_segment(
                     [pos2(spec.left(), y), pos2(spec.right(), y)],
                     Stroke::new(1.0, GRID),
@@ -222,16 +411,12 @@ impl Band {
                     FAINT,
                 );
             }
-            let n = (spec.width() as usize).clamp(16, 4096);
-            let points: Vec<egui::Pos2> = columns(&view.spectrum_db, n, from, to)
+            // A point over the middle of every screen pixel, so the trace
+            // stands exactly on the waterfall's columns.
+            let points: Vec<egui::Pos2> = columns(&view.spectrum_db, cols, from, to)
                 .into_iter()
                 .enumerate()
-                .map(|(i, db)| {
-                    pos2(
-                        spec.left() + (i as f32 + 0.5) * spec.width() / n as f32,
-                        y_of(db),
-                    )
-                })
+                .map(|(i, db)| pos2(spec.left() + (i as f32 + 0.5) / ppp, y_of(db)))
                 .collect();
             let fill = Color32::from_rgba_unmultiplied(70, 150, 255, 36);
             let mut mesh = egui::Mesh::default();
@@ -257,7 +442,7 @@ impl Band {
         .unwrap_or(1e6);
         let mut hz = (lo / step).ceil() * step;
         while hz < hi {
-            let x = x_of(hz);
+            let x = mid(x_of(hz), ppp);
             painter.line_segment(
                 [pos2(x, axis.top()), pos2(x, axis.top() + 4.0)],
                 Stroke::new(1.0, FAINT),
@@ -303,8 +488,8 @@ impl Band {
                 (Kind::C, true) => VFO,
                 (Kind::P(_), true) => AMBER,
             };
-            let a = x_of(c.carrier_hz - width / 2.0);
-            let b = x_of(c.carrier_hz + width / 2.0).max(a + 3.0);
+            let a = mid(x_of(c.carrier_hz - width / 2.0), ppp);
+            let b = mid(x_of(c.carrier_hz + width / 2.0), ppp).max(a + 3.0);
             let on = selected == Some(c.id);
             // Edges on the spectrum only, a tint over the waterfall: a narrow
             // carrier must stay visible under its mark.
@@ -387,8 +572,8 @@ impl Band {
             let (a, b) = (from.min(now), from.max(now));
             if response.dragged_by(PointerButton::Primary) {
                 let box_ = egui::Rect::from_min_max(
-                    pos2(x_of(a), spec.top()),
-                    pos2(x_of(b), rect.bottom()),
+                    pos2(mid(x_of(a), ppp), spec.top()),
+                    pos2(mid(x_of(b), ppp), rect.bottom()),
                 );
                 painter.rect_filled(box_, 0, VFO.gamma_multiply(0.15));
                 painter.line_segment([box_.left_top(), box_.left_bottom()], Stroke::new(1.0, VFO));
@@ -469,5 +654,67 @@ impl Band {
             }
         }
         Action::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoomed_out_keeps_the_peak() {
+        let mut row = vec![0.0f32; 1000];
+        row[333] = 20.0;
+        let out = columns(&row, 100, 0.0, 1.0);
+        assert_eq!(out.iter().filter(|v| **v == 20.0).count(), 1);
+        assert_eq!(out[33], 20.0);
+    }
+
+    #[test]
+    fn zoomed_in_runs_smoothly_between_bins() {
+        // Bins 0, 10, 20 ... seen eight columns to a bin.
+        let row: Vec<f32> = (0..64).map(|i| i as f32 * 10.0).collect();
+        let out = columns(&row, 64, 0.25, 0.375);
+        // The view begins at bin 16's left edge: half a bin before its middle.
+        assert!((out[0] - 155.625).abs() < 1e-3, "{}", out[0]);
+        for pair in out.windows(2) {
+            assert!((pair[1] - pair[0] - 1.25).abs() < 1e-3);
+        }
+        // The ends of the row hold their last bin.
+        assert_eq!(columns(&row, 640, 0.0, 1.0)[0], 0.0);
+        assert_eq!(columns(&row, 640, 0.0, 1.0)[639], 630.0);
+    }
+
+    #[test]
+    fn rows_come_in_steadily() {
+        let mut band = Band::new();
+        band.size = [16, 100];
+        // Three rows every twentieth of a second, drawn sixty times a second.
+        let mut steps = Vec::new();
+        let mut shown_before = 0.0;
+        let mut came = 0.0f32;
+        for frame in 0..600 {
+            if frame % 3 == 0 {
+                band.push_rows((0..3).map(|_| vec![0.0; 64]), 0.0);
+                came += 3.0;
+            }
+            let shown = came - band.pacing(1.0 / 60.0);
+            if frame >= 300 {
+                steps.push(shown - shown_before);
+            }
+            shown_before = shown;
+        }
+        // Once settled: a row a frame, not three at once and then nothing.
+        for step in steps {
+            assert!((0.8..1.2).contains(&step), "{step}");
+        }
+        assert!(band.waiting < 5.0);
+    }
+
+    #[test]
+    fn pixel_snapping() {
+        assert_eq!(snap(10.3, 1.25), 10.4);
+        assert_eq!(mid(10.3, 1.0), 10.5);
+        assert_eq!(mid(10.0, 2.0), 10.25);
     }
 }
