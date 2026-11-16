@@ -1,0 +1,12 @@
+# made by CasualArclamp
+[package]
+name = "decaero-core"
+description = "Inmarsat Classic Aero framing: unique words, interleaver, scrambler, Viterbi, CRC, signal units"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

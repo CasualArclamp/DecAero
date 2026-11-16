@@ -1,0 +1,355 @@
+<!doctype html>
+<!-- made by CasualArclamp -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DecAero mockups</title>
+<style>
+  :root {
+    --bg: #111112; --panel: #1b1b1c; --panel2: #232325; --well: #0a0a0b; --line: #303033;
+    --text: #d6d6d6; --dim: #8c8c90; --faint: #5e5e62; --white: #ffffff;
+    --vfo: #5bc0f5; --sel: #0d6088; --green: #6edc6e; --greenfill: #1f4a26;
+    --amber: #ffc450; --orange: #ffaa3c; --red: #f05a5a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #060607; color: var(--text); font: 13px/1.35 "Ubuntu", "Segoe UI", system-ui, sans-serif; }
+  .page { max-width: 1440px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; font-weight: 500; color: var(--white); margin: 8px 0 4px; }
+  .lead { color: var(--dim); margin: 0 0 18px; max-width: 900px; }
+  h2 { font-size: 15px; font-weight: 500; color: var(--white); margin: 30px 0 2px; }
+  h2 b { color: var(--vfo); font-weight: 500; margin-right: 8px; }
+  .why { color: var(--dim); margin: 0 0 8px; max-width: 1000px; }
+  .frame { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  canvas { display: block; width: 100%; background: var(--well); }
+  .mono { font-family: "Ubuntu Mono", Consolas, monospace; }
+  .dim { color: var(--dim); } .faint { color: var(--faint); } .w { color: var(--white); }
+  .g { color: var(--green); } .a { color: var(--amber); } .o { color: var(--orange); } .r { color: var(--red); } .c { color: var(--vfo); }
+
+  /* shared pieces */
+  .menu { display: flex; gap: 14px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .menu .right { margin-left: auto; color: var(--green); }
+  .top { display: flex; align-items: center; gap: 12px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .play { background: var(--greenfill); color: var(--green); border: 1px solid #2f6b39; padding: 6px 14px; border-radius: 3px; font-size: 14px; }
+  .freq { font: 26px "Ubuntu Mono", Consolas, monospace; color: var(--white); letter-spacing: 1px; }
+  .freq i { color: var(--faint); font-style: normal; }
+  .btn, .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; color: var(--text); white-space: nowrap; }
+  .chip.on, .btn.on { background: var(--sel); border-color: var(--vfo); color: var(--white); }
+  .seg { display: inline-flex; } .seg .chip { border-radius: 0; margin-left: -1px; } .seg .chip:first-child { border-radius: 3px 0 0 3px; margin-left: 0; } .seg .chip:last-child { border-radius: 0 3px 3px 0; }
+  .status { display: flex; gap: 0; background: var(--panel); border-top: 1px solid var(--line); color: var(--dim); }
+  .status span { padding: 3px 10px; border-right: 1px solid var(--line); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; }
+  .card > .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .card > .hd .t { color: var(--white); font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-weight: 400; color: var(--dim); padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 4px 8px; border-bottom: 1px solid #262628; white-space: nowrap; }
+  tr.sel td { background: #12303f; }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 3px 8px; }
+  .kv > div:nth-child(odd) { color: var(--dim); }
+  .bar { display: inline-block; width: 70px; height: 7px; background: #2c2c2e; border-radius: 2px; vertical-align: middle; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .bar.warn > i { background: var(--amber); } .bar.bad > i { background: var(--red); }
+  .tag { display: inline-block; padding: 0 5px; border-radius: 2px; font-size: 11px; background: #2c2c2e; color: var(--dim); }
+  .tag.mil { background: #3a3413; color: var(--amber); } .tag.lock { background: var(--greenfill); color: var(--green); }
+  .tag.srch { background: #3d2a12; color: var(--orange); } .tag.p { background: #12303f; color: var(--vfo); }
+  .vfolabel { position: absolute; top: 2px; background: var(--vfo); color: #06202c; padding: 0 5px; border-radius: 2px; font-size: 11px; white-space: nowrap; }
+  .rel { position: relative; }
+  .log { font: 12px/1.45 "Ubuntu Mono", Consolas, monospace; color: var(--text); white-space: pre-wrap; overflow: hidden; }
+  .row { display: flex; gap: 8px; } .col { display: flex; flex-direction: column; gap: 8px; } .grow { flex: 1; min-width: 0; overflow: hidden; } .row > div[style*="width:1"] { flex: none; }
+  .tiles { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 6px; min-height: 118px; }
+  .tile.live { border-color: var(--vfo); } .tile.listen { border-color: var(--green); background: #162118; }
+  .tile .ch { color: var(--white); font-size: 14px; }
+  .sub { color: var(--white); margin: 9px 0 3px; padding-top: 6px; border-top: 1px solid var(--line); }
+  .kv.k2 { grid-template-columns: 86px 1fr; }
+  .vmargin { position: relative; width: 46px; flex: none; background: var(--well); border: 1px solid var(--line); }
+  .vmargin .zone { position: absolute; left: 0; width: 8px; bottom: 0; }
+  .vmargin .zone.bad { background: var(--red); } .vmargin .zone.warn { background: var(--amber); } .vmargin .zone.ok { background: #2f6b39; }
+  .vmargin .thr, .vmargin .now, .vmargin .peak { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--red); }
+  .vmargin .now { border-top: 2px solid var(--white); } .vmargin .peak { border-top: 1px solid var(--faint); left: 8px; }
+  .vmargin span { position: absolute; left: 11px; bottom: 1px; font-size: 10px; color: var(--dim); white-space: nowrap; }
+  .vmargin .now span { color: var(--white); }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 8px; background: var(--panel); }
+  .tabs span { padding: 5px 12px; color: var(--dim); border-bottom: 2px solid transparent; }
+  .tabs span.on { color: var(--white); border-bottom-color: var(--vfo); }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>DecAero: five layout mockups</h1>
+<p class="lead">All five use DecSAT's colours: the dark egui panels, the magma waterfall, cyan VFO marks, green lock, amber and orange warnings. Aircraft, registrations and numbers are invented placeholders. Every layout carries the same decoder figures as the DVB-S2 card: Eb/N0, offset, Viterbi (FEC) load, pre-FEC BER, CRC and unique-word counts, voice frame errors and CPU.</p>
+
+<!-- ============ 1 ============ -->
+<h2><b>1</b>Stacked cards</h2>
+<p class="why">Closest to your screenshot: band, active calls and channel activity as collapsible cards in one scrolling column. Decoder figures sit in the call table.</p>
+<div class="frame">
+  <div class="top">
+    <span class="play">❚❚ Pause</span>
+    <span class="freq"><i>00</i>1.542.336.<i>000</i></span>
+    <span class="dim">SDR++ server 192.168.1.40:5259 · 250 kS/s</span>
+    <span class="g">clock +1349 Hz</span><span class="dim">lost 0 · overflows 0 · CPU 6%</span>
+    <span class="btn" style="margin-left:auto">Follow voice: on</span>
+  </div>
+  <div class="col" style="padding:8px">
+    <div class="card">
+      <div class="hd"><span class="t">▾ Band</span>
+        <span class="seg"><span class="chip">Auto</span><span class="chip on">30 dB</span><span class="chip">50 dB</span><span class="chip">70 dB</span></span>
+        <span class="seg"><span class="chip on">Raw</span><span class="chip">Smooth</span></span>
+        <span class="dim">2 voice carriers · 1 P channel · floor −68.9 dBFS</span></div>
+      <div class="rel"><canvas data-kind="spec" data-c="0.19:0.06:1,0.72:0.06:1,0.93:0.012:0.7" height="150"></canvas>
+        <span class="vfolabel" style="left:15%">A1 · C 8400 · LOCK</span><span class="vfolabel" style="left:68%">A10 · C 8400 · LOCK</span><span class="vfolabel" style="left:89%;background:var(--amber)">P 1200</span></div>
+      <canvas data-kind="wf" data-c="0.19:0.06:1,0.72:0.06:1,0.93:0.012:0.7" height="170"></canvas>
+    </div>
+    <div class="card">
+      <div class="hd"><span class="t">▾ Active calls</span><span class="chip on">Scan</span>
+        <span class="seg"><span class="chip on">All</span><span class="chip">Civil</span><span class="chip">Military</span></span>
+        <span class="dim">listening to A10 · recording to Opus</span></div>
+      <div class="row">
+        <div class="grow">
+          <table>
+            <tr><th>Ch</th><th>Aircraft (AES)</th><th>Start</th><th>Length</th><th>Eb/N0</th><th>FEC load</th><th>Pre-FEC BER</th><th>CRC</th><th>Voice errs</th><th>Offset</th><th></th></tr>
+            <tr><td>A1</td><td><span class="g mono">7C4A21</span> VH-XZA <span class="dim">A330 · Example Air</span></td><td>12:25:55</td><td>3:57</td><td>7.7 dB</td><td><span class="bar"><i style="width:28%"></i></span> 28%</td><td class="mono">1.9e-2</td><td class="g">475 / 0</td><td>1</td><td>+212 Hz</td><td><span class="btn">Listen</span></td></tr>
+            <tr class="sel"><td>A10</td><td><span class="g mono">C02ECA</span> C-FXMP <span class="dim">B787 · Sample Airways</span></td><td>12:22:50</td><td>7:02</td><td>4.1 dB</td><td><span class="bar warn"><i style="width:71%"></i></span> 71%</td><td class="mono">6.4e-2</td><td class="a">845 / 6</td><td>2</td><td>−88 Hz</td><td><span class="btn on">Stop</span></td></tr>
+          </table>
+          <div class="row" style="margin-top:8px"><canvas data-kind="scope" height="80" style="width:28%"></canvas><canvas class="grow" data-kind="sgram" height="80"></canvas></div>
+        </div>
+        <div style="width:170px"><canvas data-kind="const" data-m="oqpsk" height="170"></canvas><div class="dim" style="text-align:center">A10 · phase scatter 16.5° rms</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="hd"><span class="t">▾ Channel activity</span><span class="seg"><span class="chip">6 h</span><span class="chip on">24 h</span></span><span class="dim">350 calls in view</span></div>
+      <canvas data-kind="heat" height="150"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2><b>2</b>DecSAT split</h2>
+<p class="why">The DecSAT window as it is now: waterfall on the left with VFO marks, the side panel on the right with one line per decoder and a full label/value card for the selected one. Most familiar; the least room for history.</p>
+<div class="frame">
+  <div class="menu"><span>File</span><span>View</span><span>Satellite</span><span>Tools</span><span>Audio</span><span class="right">decsat-server 192.168.1.40 · 250 kS/s · zstd 9.1 kB/s</span></div>
+  <div class="top"><span class="play">❚❚ Pause</span><span class="o">input −15 dBFS</span><span class="freq"><i>00</i>1.542.336.<i>000</i></span><span class="dim">Inmarsat 4-F1 143.5°E · Aero voice band</span><span class="btn on" style="margin-left:auto">Follow voice</span><span class="btn">🔊 A10</span></div>
+  <div class="row" style="gap:0">
+    <div style="width:46%;border-right:1px solid var(--line)">
+      <div class="rel"><canvas data-kind="spec" data-c="0.25:0.09:1,0.68:0.09:1" height="230"></canvas><span class="vfolabel" style="left:17%">A1 · Aero C · LOCK · 8.4 kbit/s</span><span class="vfolabel" style="left:60%">A10 · Aero C · LOCK</span></div>
+      <canvas data-kind="wf" data-c="0.25:0.09:1,0.68:0.09:1" height="390"></canvas>
+    </div>
+    <div class="grow" style="padding:8px 10px;background:var(--panel)">
+      <div class="row" style="align-items:center;margin-bottom:6px"><span class="w" style="font-size:16px">Decoders</span><span class="dim">new carriers run</span><span class="chip on">Aero auto</span><span class="btn" style="margin-left:auto">+ New VFO</span></div>
+      <div class="col" style="gap:3px">
+        <div class="row" style="background:#12303f;padding:4px 8px;border-radius:2px"><span class="c">■</span><span class="w grow">A10 · C 8400 · LOCK · C-FXMP B787</span><span class="dim">CPU 0.4%</span></div>
+        <div class="row" style="padding:4px 8px"><span class="c">■</span><span class="grow">A1 · C 8400 · LOCK · VH-XZA A330</span><span class="dim">CPU 0.4%</span></div>
+        <div class="row" style="padding:4px 8px"><span class="a">■</span><span class="grow">P 1200 · LOCK · GES 0x82 · 41 SU/min</span><span class="dim">CPU 0.1%</span></div>
+        <div class="row" style="padding:4px 8px"><span class="faint">■</span><span class="grow dim">A4 · searching (carrier seen 0.6 s ago)</span><span class="dim">CPU 0.2%</span></div>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:8px 0">
+      <div class="row">
+        <div class="grow">
+          <div class="w" style="margin-bottom:4px">Aero C channel 8400 bit/s (A-QPSK, voice)</div>
+          <div class="kv">
+            <div>Carrier</div><div class="g">locked · Eb/N0 4.1 dB · C/N0 43.3 dBHz</div>
+            <div>Offset</div><div>−88 Hz · clock +3.1 ppm</div>
+            <div>Unique word</div><div class="g">845 of 851 frames · 2 of 52 bits wrong (avg)</div>
+            <div>FEC</div><div>Viterbi K=7 rate 2/3 · <span class="bar warn"><i style="width:71%"></i></span> load 71%</div>
+            <div>Pre-FEC BER</div><div class="a">6.4e-2 · after FEC 0 errors in 4.1 s</div>
+            <div>Sub-band</div><div>CRC 845 good · 6 bad · last: call progress</div>
+            <div>Voice</div><div>AMBE 4.8k · 21 100 frames · 2 repeated · 0 muted</div>
+            <div>Aircraft</div><div><span class="g mono">C02ECA</span> C-FXMP · B787-9 · Sample Airways</div>
+            <div>Ground</div><div>GES 0x82 · assigned on P at 12:22:48</div>
+            <div>Record</div><div><span class="btn">● Opus</span> calls/2026-11-16/A10_C02ECA_122250.opus</div>
+            <div>Play</div><div><span class="btn on">🔊 Listening</span> <span class="btn">Mute</span> gain +33 dB</div>
+          </div>
+        </div>
+        <div style="width:180px"><canvas data-kind="const" data-m="oqpsk" height="180"></canvas><canvas data-kind="sgram" height="70" style="margin-top:6px"></canvas></div>
+      </div>
+    </div>
+  </div>
+  <div class="status"><span>live</span><span>4 decoders</span><span>2 calls</span><span>CPU 6%</span><span>front end 0% lost</span></div>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2><b>3</b>Channel console</h2>
+<p class="why">Voice first: one tile per voice channel, like a dispatch console. A thin band strip stays on top. Good when the whole point is hearing calls; data channels get less room.</p>
+<div class="frame">
+  <div class="top"><span class="play">❚❚ Pause</span><span class="freq"><i>00</i>1.542.336.<i>000</i></span><span class="chip on">Follow voice</span><span class="chip on">Scan</span><span class="seg"><span class="chip on">All</span><span class="chip">Civil</span><span class="chip">Military</span></span><span class="dim" style="margin-left:auto">vol ▬▬▬▬▬●─ · CPU 6%</span></div>
+  <div class="rel"><canvas data-kind="wf" data-c="0.11:0.05:1,0.47:0.05:0.5,0.75:0.05:1" height="90"></canvas></div>
+  <div style="padding:8px">
+    <div class="tiles">
+      <div class="tile"><span class="ch">A0</span> <span class="tag">idle</span><div class="faint" style="margin-top:28px">last call 02:14 ago</div></div>
+      <div class="tile live"><span class="ch">A1</span> <span class="tag lock">LOCK</span><div class="g mono">7C4A21</div><div>VH-XZA · A330</div><div class="dim">3:57 · 7.7 dB</div><span class="bar"><i style="width:28%"></i></span> <span class="dim">FEC 28%</span><canvas data-kind="sgram" height="26" style="margin-top:4px"></canvas></div>
+      <div class="tile"><span class="ch">A2</span> <span class="tag">idle</span><div class="faint" style="margin-top:28px">last call 11:40 ago</div></div>
+      <div class="tile"><span class="ch">A3</span> <span class="tag">idle</span><div class="faint" style="margin-top:28px">last call 0:38 ago</div></div>
+      <div class="tile"><span class="ch">A4</span> <span class="tag srch">SEARCH</span><div class="o">carrier seen</div><div class="dim">0.6 s · −3 dB below A1</div><span class="bar bad"><i style="width:100%"></i></span> <span class="dim">no UW yet</span></div>
+      <div class="tile"><span class="ch">A5</span> <span class="tag">idle</span></div>
+      <div class="tile"><span class="ch">A6</span> <span class="tag">idle</span></div>
+      <div class="tile"><span class="ch">A7</span> <span class="tag">idle</span></div>
+      <div class="tile"><span class="ch">A8</span> <span class="tag">idle</span></div>
+      <div class="tile"><span class="ch">A9</span> <span class="tag">idle</span></div>
+      <div class="tile listen"><span class="ch">A10</span> <span class="tag lock">LOCK</span> <span class="g">🔊</span><div class="g mono">C02ECA</div><div>C-FXMP · B787</div><div class="dim">7:02 · 4.1 dB</div><span class="bar warn"><i style="width:71%"></i></span> <span class="dim">FEC 71%</span><canvas data-kind="sgram" height="26" style="margin-top:4px"></canvas></div>
+      <div class="tile"><span class="ch">A11</span> <span class="tag">idle</span></div>
+      <div class="tile"><span class="ch">A12</span> <span class="tag mil">MIL</span><div class="faint" style="margin-top:12px">last: AE2933 · 4:10</div></div>
+      <div class="tile"><span class="ch">A13</span> <span class="tag">idle</span></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="card grow"><div class="hd"><span class="t">A10 decoder</span><span class="dim">C 8400 · A-QPSK · Viterbi 2/3 · AMBE 4.8k</span></div>
+        <div class="row"><div style="width:150px"><canvas data-kind="const" data-m="oqpsk" height="150"></canvas></div>
+        <div class="kv grow"><div>Eb/N0</div><div>4.1 dB · offset −88 Hz</div><div>FEC load</div><div><span class="bar warn"><i style="width:71%"></i></span> 71% · pre-FEC BER 6.4e-2</div><div>Sub-band CRC</div><div>845 good · 6 bad</div><div>Unique word</div><div>845 / 851</div><div>Voice frames</div><div>21 100 · 2 repeated</div><div>Recording</div><div>A10_C02ECA_122250.opus · 212 kB</div></div></div></div>
+      <div class="card" style="width:38%"><div class="hd"><span class="t">Recent calls</span></div>
+        <table><tr><th>Time</th><th>Ch</th><th>Aircraft</th><th>Length</th><th></th></tr>
+        <tr><td>12:19</td><td>A3</td><td>9V-QRT · A350</td><td>1:12</td><td class="c">▶</td></tr>
+        <tr><td>12:11</td><td>A12</td><td>AE2933 <span class="tag mil">MIL</span></td><td>4:10</td><td class="c">▶</td></tr>
+        <tr><td>12:02</td><td>A0</td><td>ZK-NBD · B777</td><td>0:48</td><td class="c">▶</td></tr>
+        <tr><td>11:57</td><td>A2</td><td>VH-OQL · A380</td><td>6:31</td><td class="c">▶</td></tr></table></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="chosen"><b>4</b>Three columns (chosen, revised: fuller decoder panel and margin bar)</h2>
+<p class="why">Everything at once on a wide monitor: channel list on the left, band and audio in the middle, messages and aircraft on the right. Data (ACARS, ADS-C) gets equal weight with voice.</p>
+<div class="frame">
+  <div class="top"><span class="play">❚❚ Pause</span><span class="freq"><i>00</i>1.545.100.<i>000</i></span><span class="dim">L-band · 600 kS/s · 143.5°E</span><span class="seg" style="margin-left:auto"><span class="chip on">L-band</span><span class="chip">C-band</span></span><span class="chip on">Follow voice</span></div>
+  <div class="row" style="gap:0">
+    <div style="width:350px;flex:none;background:var(--panel);border-right:1px solid var(--line);padding:8px">
+      <div class="w" style="margin-bottom:4px">Channels</div>
+      <table>
+        <tr><th>Ch</th><th>Mode</th><th>Eb/N0</th><th>FEC</th></tr>
+        <tr><td><span class="tag p">P</span> Psmc</td><td>600</td><td>9.2</td><td><span class="bar" style="width:44px"><i style="width:12%"></i></span></td></tr>
+        <tr><td><span class="tag p">P</span> Pd 1</td><td>1200</td><td>8.4</td><td><span class="bar" style="width:44px"><i style="width:18%"></i></span></td></tr>
+        <tr><td><span class="tag p">P</span> Pd 2</td><td>10500</td><td>6.0</td><td><span class="bar" style="width:44px"><i style="width:40%"></i></span></td></tr>
+        <tr><td><span class="tag lock">C</span> A1</td><td>8400</td><td>7.7</td><td><span class="bar" style="width:44px"><i style="width:28%"></i></span></td></tr>
+        <tr class="sel"><td><span class="tag lock">C</span> A10 🔊</td><td>8400</td><td>4.1</td><td><span class="bar warn" style="width:44px"><i style="width:71%"></i></span></td></tr>
+        <tr><td><span class="tag srch">C</span> A4</td><td>?</td><td class="dim">–</td><td class="o">search</td></tr>
+      </table>
+      <div class="row" style="align-items:center;margin:10px 0 4px"><span class="w grow">A10 · Aero C 8400</span><span class="tag lock">LOCK</span></div>
+      <div class="row" style="gap:6px">
+        <div class="grow"><canvas data-kind="const" data-m="oqpsk" height="190"></canvas></div>
+        <div class="vmargin" title="link margin">
+          <div class="zone bad" style="height:20%"></div><div class="zone warn" style="height:15%;bottom:20%"></div><div class="zone ok" style="height:65%;bottom:35%"></div>
+          <div class="thr" style="bottom:20%"><span>fail 2.0</span></div>
+          <div class="now" style="bottom:41%"><span>4.1 dB</span></div>
+          <div class="peak" style="bottom:58%"></div>
+        </div>
+      </div>
+      <div class="row" style="align-items:center;margin-top:6px"><span class="dim" style="width:86px">Margin</span><span class="a" style="font-size:15px">+2.1 dB</span><span class="dim">above the decode limit</span></div>
+      <div class="dim" style="margin-top:4px">Eb/N0 · last 60 s</div><canvas data-kind="trend" height="34"></canvas>
+      <div class="sub">Signal</div>
+      <div class="kv k2"><div>Eb/N0</div><div>4.1 dB <span class="dim">(min 3.2 · max 5.8)</span></div><div>C/N0</div><div>43.3 dBHz</div><div>Level</div><div>−61.2 dBFS · floor −68.9</div><div>Offset</div><div>−88 Hz <span class="dim">drift −0.4 Hz/s</span></div><div>Clock</div><div>+3.1 ppm · 4200.013 Bd</div><div>Phase scatter</div><div>16.5° rms</div><div>EVM</div><div>29% · MER 10.7 dB</div></div>
+      <div class="sub">FEC</div>
+      <div class="kv k2"><div>Code</div><div>Viterbi K=7 · rate 2/3</div><div>FEC load</div><div><span class="bar warn" style="width:90px"><i style="width:71%"></i></span> 71%</div><div>Pre-FEC BER</div><div class="a">6.4e-2</div><div>Corrected</div><div>249 020 bits</div><div>Post-FEC</div><div class="g">0 errors in 4.1 s</div><div>Unique word</div><div>845 / 851 · 2 of 52 wrong</div><div>Sub-band CRC</div><div class="a">845 good · 6 bad</div><div>Frames</div><div>851 · 0 slipped</div></div>
+      <div class="sub">Voice</div>
+      <div class="kv k2"><div>Codec</div><div>AMBE 4.8k · 21 100 frames</div><div>Frame errors</div><div>2 repeated · 0 muted</div><div>Audio</div><div>in −42 dB · out −8 dB</div><div>Recording</div><div class="g">● Opus · 212 kB</div></div>
+      <div class="sub">Call</div>
+      <div class="kv k2"><div>Aircraft</div><div><span class="g mono">C02ECA</span> C-FXMP · B787-9</div><div>Operator</div><div>Sample Airways</div><div>Ground</div><div>GES 0x82 · spot beam</div><div>Frequencies</div><div>rx 1542.9855 · tx 1644.4855</div><div>Started</div><div>12:22:50 · 7:02 · via P 600</div><div>Last signal</div><div>EIRP adjust −1 dB</div><div>CPU</div><div>0.4%</div></div>
+    </div>
+    <div class="grow">
+      <div class="rel"><canvas data-kind="spec" data-c="0.07:0.008:0.9,0.13:0.012:0.8,0.3:0.05:0.9,0.52:0.03:1,0.83:0.03:1" height="150"></canvas><span class="vfolabel" style="left:4%;background:var(--amber)">Psmc</span><span class="vfolabel" style="left:26%;background:var(--amber)">Pd 10.5k</span><span class="vfolabel" style="left:49%">A1</span><span class="vfolabel" style="left:80%">A10</span></div>
+      <canvas data-kind="wf" data-c="0.07:0.008:0.9,0.13:0.012:0.8,0.3:0.05:0.9,0.52:0.03:1,0.83:0.03:1" height="250"></canvas>
+      <div style="padding:8px"><div class="dim">A10 audio · in −42 dB · out −8 dB</div><canvas data-kind="sgram" height="90"></canvas>
+      <div class="dim" style="margin-top:6px">Channel activity · 24 h</div><canvas data-kind="heat" height="110"></canvas></div>
+    </div>
+    <div style="width:340px;background:var(--panel);border-left:1px solid var(--line);padding:8px">
+      <div class="row" style="align-items:center;margin-bottom:4px"><span class="w grow">Messages</span><span class="seg"><span class="chip on">ACARS</span><span class="chip">ADS-C</span><span class="chip">SUs</span></span></div>
+      <div class="log"><span class="dim">12:29:41 P 1200 ↑</span> <span class="g">7C4A21</span> VH-XZA
+ label H1  blk F
+ <span class="w">REQ WX YSSY YMML</span>
+<span class="dim">12:29:36 T 1200 ↓</span> <span class="g">C02ECA</span> C-FXMP
+ label 5Z  blk 3
+ <span class="w">/POS S3412E15108 FL390</span>
+<span class="dim">12:29:20 P 600</span> <span class="c">C channel assignment</span>
+ <span class="g">7C4A21</span> rx 1542.9175 tx 1644.4175
+ <span class="c">→ decoder started on A1</span>
+<span class="dim">12:28:58 P 600</span> log-on confirm <span class="g">8A01F3</span></div>
+      <div class="w" style="margin:10px 0 4px">Aircraft seen (1 h)</div>
+      <table><tr><th>AES</th><th>Reg</th><th>Type</th><th>Last</th></tr>
+        <tr><td class="g mono">7C4A21</td><td>VH-XZA</td><td>A330</td><td>voice</td></tr>
+        <tr><td class="g mono">C02ECA</td><td>C-FXMP</td><td>B787</td><td>voice</td></tr>
+        <tr><td class="g mono">8A01F3</td><td>PK-GZE</td><td>B738</td><td>log-on</td></tr>
+        <tr><td class="g mono">AE2933</td><td><span class="tag mil">MIL</span> C-17</td><td></td><td>ACARS</td></tr></table>
+    </div>
+  </div>
+  <div class="status"><span>live</span><span>6 decoders</span><span>2 calls</span><span>41 SU/min</span><span>CPU 9%</span></div>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2><b>5</b>Big waterfall with a dock</h2>
+<p class="why">SDR++ style: the waterfall owns the window, every decoder is a mark on it, and a tabbed dock underneath switches between voice, data, messages, activity and a decoder table that reads like DecSAT's DVB-S2 statistics.</p>
+<div class="frame">
+  <div class="menu"><span>File</span><span>View</span><span>Satellite</span><span>Tools</span><span>Audio</span><span class="right">udp:5610 · 250 kS/s · live</span></div>
+  <div class="top"><span class="play">❚❚ Pause</span><span class="freq"><i>00</i>1.542.336.<i>000</i></span><span class="chip on">Follow voice</span><span class="chip">Scan</span><span class="dim">2 calls · 1 searching</span><span class="btn" style="margin-left:auto">🔊 A10 C-FXMP</span></div>
+  <div class="rel"><canvas data-kind="spec" data-c="0.19:0.06:1,0.44:0.06:0.45,0.72:0.06:1,0.93:0.012:0.7" height="170"></canvas>
+    <span class="vfolabel" style="left:15%">A1 · VH-XZA · 7.7 dB · FEC 28%</span><span class="vfolabel" style="left:40%;background:var(--orange)">A4 · searching</span><span class="vfolabel" style="left:67%;background:var(--green)">🔊 A10 · C-FXMP · 4.1 dB · FEC 71%</span><span class="vfolabel" style="left:90%;background:var(--amber)">P 1200</span></div>
+  <canvas data-kind="wf" data-c="0.19:0.06:1,0.44:0.06:0.45,0.72:0.06:1,0.93:0.012:0.7" height="270"></canvas>
+  <div class="tabs"><span>Voice</span><span>Data channels</span><span>Messages</span><span>Activity</span><span class="on">Decoders</span><span>Aircraft</span></div>
+  <div class="row" style="padding:8px;background:var(--panel)">
+    <div class="grow">
+      <table>
+        <tr><th>Decoder</th><th>State</th><th>Eb/N0</th><th>Offset</th><th>Clock</th><th>FEC load</th><th>Pre-FEC BER</th><th>Corrected</th><th>UW</th><th>CRC good / bad</th><th>Voice rep / mute</th><th>CPU</th></tr>
+        <tr><td>A1 · C 8400</td><td><span class="tag lock">LOCK</span></td><td>7.7 dB</td><td>+212 Hz</td><td>+3.0 ppm</td><td><span class="bar"><i style="width:28%"></i></span> 28%</td><td class="mono">1.9e-2</td><td>41 812</td><td>475/475</td><td class="g">475 / 0</td><td>1 / 0</td><td>0.4%</td></tr>
+        <tr class="sel"><td>A10 · C 8400</td><td><span class="tag lock">LOCK</span></td><td>4.1 dB</td><td>−88 Hz</td><td>+3.1 ppm</td><td><span class="bar warn"><i style="width:71%"></i></span> 71%</td><td class="mono a">6.4e-2</td><td>249 020</td><td>845/851</td><td class="a">845 / 6</td><td>2 / 0</td><td>0.4%</td></tr>
+        <tr><td>A4 · C ?</td><td><span class="tag srch">SEARCH</span></td><td class="dim">2.0 dB?</td><td class="dim">+40 Hz?</td><td class="dim">–</td><td><span class="bar bad"><i style="width:100%"></i></span></td><td class="dim">–</td><td class="dim">–</td><td class="o">0/3</td><td class="dim">–</td><td class="dim">–</td><td>0.2%</td></tr>
+        <tr><td>P 1200 · GES 0x82</td><td><span class="tag lock">LOCK</span></td><td>8.4 dB</td><td>+1349 Hz</td><td>+3.0 ppm</td><td><span class="bar"><i style="width:18%"></i></span> 18%</td><td class="mono">9.8e-3</td><td>8 204</td><td>312/312</td><td class="g">2 496 / 0</td><td class="dim">–</td><td>0.1%</td></tr>
+      </table>
+      <div class="dim" style="margin-top:6px">FEC load = share of the Viterbi decoder's correcting power in use (0% clean, 100% about to fail). Lock is kept down to about 2 dB Eb/N0 by coherent averaging over the unique word.</div>
+    </div>
+    <div style="width:150px"><canvas data-kind="const" data-m="oqpsk" height="150"></canvas><div class="dim" style="text-align:center">A10</div></div>
+    <div style="width:150px"><canvas data-kind="const" data-m="bpsk" height="150"></canvas><div class="dim" style="text-align:center">P 1200</div></div>
+  </div>
+  <div class="status"><span>live</span><span>4 decoders</span><span>2 calls</span><span>CPU 6%</span><span>recording 2 calls to Opus</span></div>
+</div>
+<p class="dim" style="margin:16px 0">Pick one, or mix: for example "5, but with the call table from 1 on the Voice tab and the tiles from 3 as an optional view".</p>
+</div>
+
+<script>
+// Placeholder drawing only: seeded noise so the pictures are the same on every load.
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+// DecSAT's waterfall runs black -> purple -> orange -> pale (magma-like).
+const MAP = [[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],[251,135,97],[254,194,135],[252,253,191]];
+function magma(t) { t = Math.max(0, Math.min(1, t)) * (MAP.length - 1); const i = Math.min(MAP.length - 2, Math.floor(t)), f = t - i;
+  return MAP[i].map((a, k) => Math.round(a + f * (MAP[i + 1][k] - a))); }
+function carriers(el) { return (el.dataset.c || '').split(',').filter(Boolean).map(s => { const [c, w, a] = s.split(':').map(Number); return { c, w, a }; }); }
+function level(x, cs) { let v = 0; for (const k of cs) { const d = Math.abs(x - k.c) / (k.w / 2); v = Math.max(v, k.a / (1 + Math.pow(d, 10))); } return v; }
+function fit(el) { const w = Math.max(40, Math.round(el.clientWidth)); el.width = w; return el.getContext('2d'); }
+
+function wf(el) { const g = fit(el), W = el.width, H = el.height, cs = carriers(el), r = rng(7 + W), im = g.createImageData(W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const s = level(x / W, cs), t = 0.16 + 0.12 * r() + s * (0.55 + 0.2 * r());
+    const c = magma(t), o = 4 * (y * W + x); im.data[o] = c[0]; im.data[o + 1] = c[1]; im.data[o + 2] = c[2]; im.data[o + 3] = 255; }
+  g.putImageData(im, 0, 0); marks(g, W, H, cs); }
+function marks(g, W, H, cs) { g.fillStyle = 'rgba(91,192,245,0.10)'; g.strokeStyle = 'rgba(91,192,245,0.9)'; g.lineWidth = 1;
+  for (const k of cs) { const a = (k.c - k.w * 0.62) * W, b = (k.c + k.w * 0.62) * W; g.fillRect(a, 0, b - a, H);
+    g.beginPath(); g.moveTo(a + .5, 0); g.lineTo(a + .5, H); g.moveTo(b + .5, 0); g.lineTo(b + .5, H); g.stroke(); } }
+function spec(el) { const g = fit(el), W = el.width, H = el.height, cs = carriers(el), r = rng(3 + W);
+  g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, W, H); g.strokeStyle = '#1e1e21'; g.fillStyle = '#5e5e62'; g.font = '10px sans-serif';
+  for (let i = 1; i < 4; i++) { const y = Math.round(H * i / 4) + .5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.fillText(-40 - i * 10 + ' dB', 4, y - 3); }
+  g.beginPath(); for (let x = 0; x < W; x++) { const s = level(x / W, cs), y = H * (0.80 - 0.50 * s) + (r() - 0.5) * H * (s > 0.3 ? 0.05 : 0.10); x ? g.lineTo(x, y) : g.moveTo(x, y); }
+  g.strokeStyle = '#9fd4f5'; g.lineWidth = 1; g.stroke(); g.lineTo(W, H); g.lineTo(0, H); g.closePath(); g.fillStyle = 'rgba(60,110,160,0.22)'; g.fill(); marks(g, W, H, cs); }
+function cons(el) { const g = fit(el), W = el.width, H = el.height, r = rng(11), m = el.dataset.m;
+  g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, W, H); g.strokeStyle = '#26262a'; g.beginPath(); g.moveTo(W / 2, 0); g.lineTo(W / 2, H); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+  g.fillStyle = 'rgba(91,192,245,0.75)'; const n = () => (r() + r() + r() - 1.5) * 0.17;
+  for (let i = 0; i < 520; i++) { const sx = r() < .5 ? -1 : 1, sy = m === 'bpsk' ? 0 : (r() < .5 ? -1 : 1);
+    g.fillRect(W / 2 + (sx * 0.5 + n()) * W / 2 * 0.9, H / 2 + (sy * 0.5 + n()) * H / 2 * 0.9, 1.6, 1.6); } }
+function sgram(el) { const g = fit(el), W = el.width, H = el.height, r = rng(23), im = g.createImageData(W, H);
+  for (let x = 0; x < W; x++) { const talk = Math.sin(x / 37) + Math.sin(x / 11) > 0.1, pitch = 0.82 - 0.05 * Math.sin(x / 9);
+    for (let y = 0; y < H; y++) { const f = y / H; let t = 0.12 + 0.1 * r(); if (talk) { const h = Math.abs(((1 - f) / (1 - pitch)) % 1 - 0.5); t += (h > 0.38 ? 0.55 : 0.18) * f + 0.15 * r(); }
+      const c = magma(t), o = 4 * (y * W + x); im.data[o] = c[0]; im.data[o + 1] = c[1]; im.data[o + 2] = c[2]; im.data[o + 3] = 255; } }
+  g.putImageData(im, 0, 0); }
+function scope(el) { const g = fit(el), W = el.width, H = el.height, r = rng(5); g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, W, H); g.strokeStyle = '#9fd4f5'; g.beginPath();
+  let v = 0; for (let x = 0; x < W; x++) { v = v * 0.7 + (r() - 0.5) * 0.9; const y = H / 2 + v * H * 0.55 * Math.sin(x / 14); x ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke(); }
+function heat(el) { const g = fit(el), W = el.width, H = el.height, r = rng(41), rows = 14, cols = 96, lx = 30, ch = (H - 14) / rows, cw = (W - lx) / cols;
+  g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, W, H); g.font = '10px sans-serif';
+  const busy = [.05, .5, .55, .45, .6, .35, .02, .02, .02, .02, .3, .25, .12, .02];
+  for (let y = 0; y < rows; y++) { g.fillStyle = '#8c8c90'; g.fillText('A' + y, 4, y * ch + ch - 2);
+    for (let x = 0; x < cols; x++) { const quiet = x > 58 && x < 70 ? 0.25 : 1; g.fillStyle = '#141416'; g.fillRect(lx + x * cw, y * ch, cw - 1, ch - 1);
+      if (r() < busy[y] * quiet) { const c = magma(0.3 + 0.7 * r() * r()); g.fillStyle = `rgb(${c})`; g.fillRect(lx + x * cw, y * ch, cw - 1, ch - 1);
+        if (r() < 0.08) { g.fillStyle = '#ffc450'; g.fillRect(lx + x * cw + cw - 4, y * ch, 3, 3); } } } }
+  g.fillStyle = '#8c8c90'; for (let i = 0; i <= 8; i++) g.fillText(String((15 + i * 3) % 24).padStart(2, '0') + ':00', lx + i * (W - lx - 30) / 8, H - 2); }
+function trend(el) { const g = fit(el), W = el.width, H = el.height, r = rng(77); g.fillStyle = '#0a0a0b'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = '#f05a5a'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, H * 0.8); g.lineTo(W, H * 0.8); g.stroke(); g.setLineDash([]);
+  g.strokeStyle = '#6edc6e'; g.beginPath(); let v = 0.5; for (let x = 0; x < W; x++) { v = Math.max(0.15, Math.min(0.75, v + (r() - 0.5) * 0.08)); x ? g.lineTo(x, H * v) : g.moveTo(x, H * v); } g.stroke(); }
+const DRAW = { wf, spec, const: cons, sgram, scope, heat, trend };
+function all() { document.querySelectorAll('canvas[data-kind]').forEach(el => DRAW[el.dataset.kind](el)); }
+all(); let t; addEventListener('resize', () => { clearTimeout(t); t = setTimeout(all, 150); });
+</script>
+</body>
+</html>

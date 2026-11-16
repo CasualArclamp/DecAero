@@ -1,0 +1,17 @@
+# made by CasualArclamp
+/target
+# Reference clones (JAERO, libaeroambe, mbelib) live outside the repo in ..\jaero-ref.
+/reference
+# Captures, recordings, decoded audio and downloaded aircraft databases: never committed.
+/samples
+/captures
+/out
+/calls
+/db
+/exe/*.exe
+*.cs8
+*.cs16
+*.cf32
+*.wav
+*.opus
+*.ogg

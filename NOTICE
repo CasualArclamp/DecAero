@@ -1,0 +1,32 @@
+DecAero is licensed under the GNU GPL, version 3 or later (see LICENSE).
+It builds on other people's work:
+
+JAERO (https://github.com/jontio/JAERO), MIT, (C) 2015-2019 Jonathan Olds.
+  The Aero framing in crates/decaero-core (unique words, interleaver, scrambler,
+  frame layouts, signal unit and ACARS parsing) follows JAERO's aerol.cpp.
+
+libaeroambe (https://github.com/jontio/libaeroambe), MIT, (C) 2018 libaeroambe team.
+  The AMBE 4800x3600 frame layout, tables and parameter decoding in
+  crates/decaero-ambe are a Rust port of its ambe4800x3600.c.
+
+mbelib (https://github.com/szechyjs/mbelib), ISC, (C) 2010 mbelib Author.
+  The speech synthesis and error correction in crates/decaero-ambe are a
+  Rust port of mbelib.c and ecc.c.
+
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above
+  copyright notice and this permission notice appear in all copies.
+  THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH
+  REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+  AND FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT,
+  INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+  LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+  OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+  PERFORMANCE OF THIS SOFTWARE.
+
+PATENT NOTICE (from mbelib): this source code is a written description of how
+certain voice decoding algorithms could be implemented. Executables built from
+it may be covered by patents; check before compiling or using it.
+
+DecSAT (https://github.com/CasualArclamp/DecSAT), GPL-3.0-or-later: the look,
+the waterfall and the DSP building blocks.
