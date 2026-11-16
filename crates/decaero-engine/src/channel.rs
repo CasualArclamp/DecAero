@@ -358,6 +358,8 @@ impl Resync {
 }
 
 struct Running {
+    /// The tone frame last put in the log.
+    last_tone: Option<[u8; 9]>,
     resync: Resync,
     /// How far either side of the decoder's centre the carrier may be.
     search_hz: f64,
@@ -565,6 +567,7 @@ fn start_chain(
         t_data: Reassembler::new(),
     });
     Running {
+        last_tone: None,
         resync: Resync::new(ddc.out_rate(), bit_rate),
         search_hz: req.search_hz.min(f64::from(bit_rate) * 0.4),
         bursts,
@@ -603,6 +606,8 @@ fn process(
     let mut aircraft: Option<(u32, u8)> = None;
     let mut last_unit: Option<String> = None;
     let mut voice_kinds = [0u64; 4];
+    // Tone frames logged this block (see below).
+    let mut tones: Vec<[u8; 9]> = Vec::new();
     let mut audio_peak = 0f32;
     let (locked, totals, kind) = match &mut r.chain {
         Chain::P {
@@ -723,12 +728,37 @@ fn process(
                         FrameKind::Silence => 2,
                         FrameKind::Tone => 3,
                     }] += 1;
+                    // A clean tone frame goes to the log as it stands: the
+                    // decoder cannot play it yet (the layout of this codec's
+                    // tone frames is not known), and these are what it will
+                    // be worked out from. One line for each new pattern.
+                    if info.kind == FrameKind::Tone
+                        && info.total_errors == 0
+                        && r.last_tone != Some(info.data)
+                    {
+                        r.last_tone = Some(info.data);
+                        tones.push(info.data);
+                    }
                     audio_peak = samples
                         .iter()
                         .fold(audio_peak, |m, &s| m.max(f32::from(s).abs() / 32768.0));
                     pcm.extend_from_slice(&samples);
                 }
                 let _ = events.send(Event::Voice { channel: id, pcm });
+                for data in tones.drain(..) {
+                    let hex: String = data.iter().map(|b| format!("{b:02X}")).collect();
+                    let _ = events.send(Event::Log {
+                        channel: id,
+                        kind: Kind::C,
+                        seconds,
+                        aes: aircraft.map(|a| a.0),
+                        ges: aircraft.map(|a| a.1),
+                        title: "tone frame".into(),
+                        text: format!(
+                            "{hex} (not played: this codec's tone layout is not known yet)"
+                        ),
+                    });
+                }
             }
             let st = decoder.stats();
             (

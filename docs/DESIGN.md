@@ -63,9 +63,15 @@ channels; kept outside the repo) decode through `decaero-core`: P 600 with
   aircraft 71BE46 via ground station 82). They are the weak-signal test for
   voice; a strong call is still wanted.
 - JAERO's samples: `10.5k_sample` decodes 12480 of 12480 units;
-  `8400bps_ambe_sample` locks (181 of 219 sub-band units) and its voice frames
-  show a ringback cadence of tone frames. Tone frames are not synthesised yet
-  (mbelib gives silence for them): to do.
+  `8400bps_ambe_sample` locks (181 of 219 sub-band units). Of its 7000 voice
+  frames 1807 are speech, 5061 silence and 3 read as tone frames, but those
+  three carry 4 or 5 bit errors: it holds no real tone frame.
+- Tone frames are not played (silence, as mbelib): mbelib's 4800x3600 decoder
+  only recognises them, and where the tone's number and level sit in the
+  72 bits is not known. Its D-STAR decoder has a layout, but for a 49-bit
+  frame, and a guess would put wrong tones in the recordings. A tone frame
+  decoded without errors is written to the log in hex ("tone frame"), one
+  line a new pattern, so the layout can be worked out from a real call.
 - A demodulator block measured between 128 and 1024 bits makes no difference to
   the error rate on these weak carriers: the limit is thermal, not tracking.
 - The input can be real IF (a receiver's audio output), so the front end
@@ -296,6 +302,6 @@ thread owns the sockets.
 
 Still to do, roughly in this order:
 
-- Tone frames synthesised (ringback is silent now).
+- Tone frames played: needs a recording with real ones (see above).
 - decsat-server's compressed link as an input.
 - A test modulator crate, so the sensitivity figures are regression tests.

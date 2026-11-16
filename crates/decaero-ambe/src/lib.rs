@@ -56,7 +56,10 @@ pub enum FrameKind {
     Repeat,
     /// A silence frame, or too many repeats in a row: silence out.
     Silence,
-    /// A tone frame (not synthesised): silence out.
+    /// A tone frame: silence out. Where the tone's number and level sit in
+    /// this codec's frame is not in mbelib and no recording with real tone
+    /// frames has turned up to work it out from; `FrameInfo::data` is there
+    /// so one can be read when it does.
     Tone,
 }
 
@@ -68,6 +71,9 @@ pub struct FrameInfo {
     pub golay_errors: u32,
     /// Golay errors plus the Hamming (15,11) words that needed correcting.
     pub total_errors: u32,
+    /// The frame's 72 bits after error correction, first bit in the top of
+    /// byte 0 (`ambe_d` in mbelib).
+    pub data: [u8; 9],
 }
 
 /// The model parameters of one frame (`mbe_parms` in mbelib).
@@ -160,10 +166,15 @@ impl Decoder {
         for (o, a) in out.iter_mut().zip(audio) {
             *o = (7.0 * a).clamp(-32760.0, 32760.0) as i16;
         }
+        let mut data = [0u8; 9];
+        for (i, bit) in d.iter().enumerate() {
+            data[i / 8] |= bit << (7 - i % 8);
+        }
         FrameInfo {
             kind,
             golay_errors,
             total_errors,
+            data,
         }
     }
 
