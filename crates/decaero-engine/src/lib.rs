@@ -353,6 +353,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     let mut rejected: Vec<(f64, f64)> = Vec::new();
     // Places the deep scan named where nothing then decoded.
     let mut scan_rejected: Vec<(f64, f64)> = Vec::new();
+    // Decoders the user deleted: (offset, reach). Nothing is started there
+    // again by itself until the user adds one or a call is assigned there.
+    let mut deleted: Vec<(f64, f64)> = Vec::new();
+    let mut deleted_ids: Vec<ChannelId> = Vec::new();
     let mut next_id: ChannelId = 1;
     let mut row_seq = 0u64;
     let mut log_seq = 0u64;
@@ -443,6 +447,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     // may hold anything, the fast rates being likeliest.
                     by_hand.set(true);
                     let width = width_hz.clamp(1000.0, 40_000.0);
+                    deleted.retain(|(hz, reach)| (hz - offset_hz).abs() > reach + width / 2.0);
                     let rates = if width < 2500.0 {
                         vec![600, 1200]
                     } else {
@@ -461,6 +466,15 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 Command::Remove(id) => {
                     for w in workers.iter().filter(|w| w.id == id) {
                         w.stop.store(true, Ordering::Relaxed);
+                        // Where the carrier was found, which may be off the
+                        // place the decoder was put.
+                        let carrier = w.status.lock().unwrap().carrier_hz;
+                        let reach = w.width_hz / 2.0 + 1000.0;
+                        deleted.push((w.offset_hz, reach));
+                        if (carrier - w.offset_hz).abs() > 200.0 {
+                            deleted.push((carrier, reach));
+                        }
+                        deleted_ids.push(id);
                     }
                 }
                 Command::Listen(id) => {
@@ -609,7 +623,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                         .iter()
                         .any(|b| ((a + b) / 2.0 - offset).abs() < 300.0)
                 });
-                if ghost {
+                if ghost || deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r) {
                     continue;
                 }
                 // A decoder still searching here gives way: the scan knows
@@ -653,6 +667,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     .iter()
                     .any(|w| !w.closed && (w.offset_hz - offset).abs() < 4000.0);
                 if offset.abs() < rate / 2.0 - 5000.0 && !busy {
+                    // A new call there is news: the deletion no longer holds.
+                    deleted.retain(|(hz, reach)| (hz - offset).abs() > *reach);
                     spawn(
                         &mut workers,
                         &mut next_id,
@@ -679,6 +695,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     });
                     if busy
                         || rejected.iter().any(|(hz, _)| near(*hz, 1000.0))
+                        || deleted.iter().any(|(hz, r)| near(*hz, *r))
                         || workers.iter().filter(|w| !w.closed).count() >= 48
                     {
                         continue;
@@ -715,6 +732,11 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         workers.retain(|w| {
             if !w.closed {
                 return true;
+            }
+            // Deleted by the user: gone at once.
+            if let Some(i) = deleted_ids.iter().position(|id| *id == w.id) {
+                deleted_ids.swap_remove(i);
+                return false;
             }
             let s = w.status.lock().unwrap();
             // Nothing there, or nothing that ever decoded: leave the place

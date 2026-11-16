@@ -545,17 +545,18 @@ impl App {
         channels.sort_by(|a, b| a.carrier_hz.total_cmp(&b.carrier_hz));
         let mut pick = None;
         let mut listen = None;
+        let mut delete = None;
         egui::ScrollArea::vertical()
             .id_salt("channels")
             .max_height(230.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 egui::Grid::new("channel-table")
-                    .num_columns(5)
+                    .num_columns(6)
                     .spacing([8.0, 3.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        for h in ["", "kHz", "mode", "Eb/N0", "FEC"] {
+                        for h in ["", "kHz", "mode", "Eb/N0", "FEC", ""] {
                             ui.label(RichText::new(h).color(DIM).size(11.0));
                         }
                         ui.end_row();
@@ -587,10 +588,27 @@ impl App {
                                         .size(11.0),
                                 );
                             }
+                            if ui
+                                .small_button(RichText::new("×").color(DIM))
+                                .on_hover_text("Delete this decoder")
+                                .clicked()
+                            {
+                                delete = Some(c.id);
+                            }
                             ui.end_row();
                         }
                     });
             });
+        // Del deletes the selected decoder, unless a text box has the keys.
+        if delete.is_none()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete))
+        {
+            delete = self.selected;
+        }
+        if let Some(id) = delete {
+            self.send(Command::Remove(id));
+        }
         if let Some(id) = pick {
             self.selected = Some(id);
             self.select_hz = None;
@@ -630,6 +648,15 @@ impl App {
                     self.send(Command::Listen(if listening { None } else { Some(c.id) }));
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(RichText::new("× Delete").color(BAD))
+                    .on_hover_text("Delete this decoder (Del). It is not started here again until you add one.")
+                    .clicked()
+                {
+                    self.send(Command::Remove(c.id));
+                }
+            });
         });
         // The constellation is square, with the margin bar at its side.
         let bar_w = 50.0;
@@ -804,9 +831,6 @@ impl App {
                 ("CPU", format!("{:.1}% of a core", c.cpu * 100.0), None),
             ],
         );
-        if ui.button("Remove decoder").clicked() {
-            self.send(Command::Remove(c.id));
-        }
     }
 
     fn right(&mut self, ui: &mut Ui) {
