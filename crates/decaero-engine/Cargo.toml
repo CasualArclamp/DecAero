@@ -1,0 +1,19 @@
+# made by CasualArclamp
+[package]
+name = "decaero-engine"
+description = "DecAero receiver engine: front end, a worker per carrier, carrier watch and voice follow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+decaero-core = { path = "../decaero-core" }
+decaero-ambe = { path = "../decaero-ambe" }
+decaero-dsp = { path = "../decaero-dsp" }
+num-complex.workspace = true
+rustfft.workspace = true
+
+[lints]
+workspace = true
