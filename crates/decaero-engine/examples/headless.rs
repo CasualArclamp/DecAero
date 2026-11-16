@@ -11,9 +11,34 @@ fn main() {
     // `--add HZ:WIDTH` draws a decoder's box by hand, as a drag in the GUI
     // does; `--no-follow` leaves everything else alone.
     let follow = !args.iter().any(|a| a == "--no-follow");
-    let source = FileSource::open(std::path::Path::new(path), false).expect("open the recording");
+    // A URL is a live input, run for `--seconds N` (30 by default).
+    let live = path.contains("://");
+    let seconds: f64 = args
+        .windows(2)
+        .find(|w| w[0] == "--seconds")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(30.0);
+    let source: Box<dyn decaero_engine::Source> = if live {
+        let rate = args
+            .windows(2)
+            .find(|w| w[0] == "--rate")
+            .and_then(|w| w[1].parse().ok())
+            .unwrap_or(625_000.0);
+        let format = args
+            .windows(2)
+            .find(|w| w[0] == "--iq")
+            .and_then(|w| decaero_engine::net::Format::parse(&w[1]))
+            .unwrap_or(decaero_engine::net::Format::I16);
+        let options = decaero_engine::net::SdrppOptions {
+            center_hz,
+            ..Default::default()
+        };
+        Box::new(decaero_engine::net::open(path, rate, format, options).expect("connect"))
+    } else {
+        Box::new(FileSource::open(std::path::Path::new(path), false).expect("open the recording"))
+    };
     let engine = Engine::start(
-        Box::new(source),
+        source,
         Options {
             realtime: false,
             center_hz,
@@ -35,7 +60,7 @@ fn main() {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(200));
         let v = engine.view();
-        if v.ended {
+        if v.ended || (live && v.seconds >= seconds) {
             // Give the workers a moment to report their last frames.
             std::thread::sleep(std::time::Duration::from_millis(500));
             break;

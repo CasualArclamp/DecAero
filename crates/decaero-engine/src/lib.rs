@@ -9,6 +9,7 @@
 //! "voice follow".
 
 pub mod channel;
+pub mod net;
 pub mod scanner;
 pub mod survey;
 
@@ -37,6 +38,8 @@ pub trait Source: Send {
     fn live(&self) -> bool {
         false
     }
+    /// Tune a radio to a new centre frequency (nothing for a recording).
+    fn tune(&mut self, _center_hz: f64) {}
 }
 
 /// A recording played from memory.
@@ -445,7 +448,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 Command::Scan(on) => scan = on,
                 Command::Follow(on) => options.follow = on,
                 Command::Pause(on) => paused = on,
-                Command::SetCenter(hz) => options.center_hz = hz,
+                Command::SetCenter(hz) => {
+                    options.center_hz = hz;
+                    source.tune(hz);
+                }
             }
         }
         if paused {
@@ -563,6 +569,23 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             for (offset, bit_rate) in finds {
                 let wide = bit_rate > 1200;
                 let reach = if wide { 4000.0 } else { 900.0 };
+                // Two carriers squared together leave a line pair half way
+                // between them: not a carrier.
+                let carriers: Vec<f64> = workers
+                    .iter()
+                    .filter(|w| !w.closed)
+                    .map(|w| w.status.lock().unwrap())
+                    .filter(|s| s.locked)
+                    .map(|s| s.carrier_hz)
+                    .collect();
+                let ghost = carriers.iter().enumerate().any(|(i, a)| {
+                    carriers[i + 1..]
+                        .iter()
+                        .any(|b| ((a + b) / 2.0 - offset).abs() < 300.0)
+                });
+                if ghost {
+                    continue;
+                }
                 // A decoder still searching here gives way: the scan knows
                 // what the carrier is.
                 let mut busy = false;
@@ -717,6 +740,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             v.dropped_blocks = dropped;
             v.load = load;
             v.listening = listening;
+            // A live source says here when its link has gone.
+            if source.live() {
+                v.source = source.describe();
+            }
         }
 
         // A file is played at the speed it was recorded.

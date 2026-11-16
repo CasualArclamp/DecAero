@@ -137,13 +137,20 @@ Square, redrawn at 60 frames a second, small dots.
    the carrier inside it (bit rate and so channel type) by itself. **Done**;
    checked headless with `--example headless -- FILE --no-follow --add HZ:WIDTH`.
 
+9. Live network input (`decaero-engine/src/net.rs`): an SDR++ server
+   (`sdrpp://HOST[:5259]`, 16 or 8 bit, zstd, retuned from the centre box) and
+   plain I/Q over `tcp://`, `listen://`, `udp://`. **Done** against a stand-in
+   server (`--example net_send -- FILE.wav sdrpp://127.0.0.1:5259`) built from
+   SDR++'s source; not yet tried against a real SDR++ server. The server's
+   radio is chosen in SDR++ itself (its remote menu is not shown here).
+
 Still to do, roughly in this order:
 
 - R and T channel bursts (C-band side).
 - Tone frames synthesised (ringback is silent now).
 - JAERO-style ACARS / ADS-C feeds out (JSON over UDP, SBS).
 - Channel activity history (the heat map), kept across restarts; call log file.
-- Live inputs: SDR++ server, plain TCP/UDP IQ, decsat-server; prefs file.
+- decsat-server's compressed link as an input; a prefs file.
 - Real IF input: hide the mirror half of the band.
 - CI on Actions and the portable exe (no console window).
 - A test modulator crate, so the sensitivity figures are regression tests.

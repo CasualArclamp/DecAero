@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
 
 mod aircraft;
 mod audio;
@@ -16,7 +16,7 @@ mod recorder;
 mod theme;
 
 use decaero_engine::channel::{ChannelId, ChannelStatus, Kind};
-use decaero_engine::{Command, Engine, FileSource, LogLine, Options, View};
+use decaero_engine::{Command, Engine, FileSource, LogLine, Options, Source, View, net};
 use eframe::egui::{
     self, Align2, Color32, FontId, Frame, Margin, RichText, Sense, Stroke, Ui, pos2, vec2,
 };
@@ -76,42 +76,89 @@ struct App {
     started: Instant,
     error: Option<String>,
     aircraft: aircraft::Lookup,
+    /// The network input: its URL, and for a plain stream its rate (kS/s)
+    /// and sample format.
+    net_url: String,
+    net_rate_text: String,
+    net_format: net::Format,
+    net_eight_bit: bool,
+    connecting: Option<std::sync::mpsc::Receiver<Result<net::NetSource, String>>>,
+    /// The engine is on a live input (no pause, no file speed).
+    live: bool,
     /// Which aircraft the right-hand table shows.
     filter: Filter,
 }
 
 impl App {
+    fn center_hz(&self) -> f64 {
+        self.center_text
+            .trim()
+            .parse::<f64>()
+            .map(|m| m * 1e6)
+            .unwrap_or(0.0)
+    }
+
+    /// Start the engine on a source, a recording or a live one.
+    fn start(&mut self, source: Box<dyn Source>) {
+        let live = source.live();
+        let engine = Engine::start(
+            source,
+            Options {
+                realtime: !self.fast,
+                center_hz: self.center_hz(),
+                follow: self.follow,
+                ..Options::default()
+            },
+        );
+        if let Some(a) = &mut self.audio {
+            a.attach(engine.audio_tap());
+        }
+        self.engine = Some(engine);
+        self.live = live;
+        self.paused = false;
+        self.band.clear();
+        self.rows_seen = 0;
+        self.log.clear();
+        self.log_seen = 0;
+        self.selected = None;
+        self.error = None;
+    }
+
     fn open(&mut self, path: &std::path::Path) {
         match FileSource::open(path, true) {
-            Ok(source) => {
-                let center_hz = self
-                    .center_text
-                    .trim()
-                    .parse::<f64>()
-                    .map(|m| m * 1e6)
-                    .unwrap_or(0.0);
-                let engine = Engine::start(
-                    Box::new(source),
-                    Options {
-                        realtime: !self.fast,
-                        center_hz,
-                        follow: self.follow,
-                        ..Options::default()
-                    },
-                );
-                if let Some(a) = &mut self.audio {
-                    a.attach(engine.audio_tap());
-                }
-                self.engine = Some(engine);
-                self.band.clear();
-                self.rows_seen = 0;
-                self.log.clear();
-                self.log_seen = 0;
-                self.selected = None;
-                self.error = None;
-            }
+            Ok(source) => self.start(Box::new(source)),
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
+    }
+
+    /// Connect to the network input in the URL box. Connecting can take a
+    /// while (or fail slowly), so it is done on a thread and picked up when
+    /// it is ready.
+    fn connect(&mut self) {
+        let url = self.net_url.trim().to_string();
+        let rate = self
+            .net_rate_text
+            .trim()
+            .parse::<f64>()
+            .map(|k| k * 1e3)
+            .unwrap_or(0.0);
+        let format = self.net_format;
+        if !url.starts_with("sdrpp://") && rate <= 0.0 {
+            self.error = Some("give the sample rate in kS/s for a plain stream".into());
+            return;
+        }
+        let options = net::SdrppOptions {
+            center_hz: self.center_hz(),
+            eight_bit: self.net_eight_bit,
+            compressed: true,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ =
+                tx.send(net::open(&url, rate, format, options).map_err(|e| format!("{url}: {e}")));
+        });
+        self.connecting = Some(rx);
+        self.error = None;
     }
 
     fn send(&self, c: Command) {
@@ -121,6 +168,16 @@ impl App {
     }
 
     fn pull(&mut self) {
+        // A connection that was being made.
+        if let Some(rx) = &self.connecting
+            && let Ok(result) = rx.try_recv()
+        {
+            self.connecting = None;
+            match result {
+                Ok(source) => self.start(Box::new(source)),
+                Err(e) => self.error = Some(e),
+            }
+        }
         let Some(engine) = &self.engine else { return };
         self.view = engine.view();
         let rows = engine.rows_after(self.rows_seen);
@@ -249,6 +306,25 @@ impl App {
             {
                 self.open(&path);
             }
+            ui.separator();
+            ui.add(egui::TextEdit::singleline(&mut self.net_url).desired_width(170.0).hint_text("sdrpp://host:5259"))
+                .on_hover_text("sdrpp://HOST[:5259] for an SDR++ server; tcp://HOST:PORT, listen://ADDR:PORT or udp://ADDR:PORT for plain I/Q");
+            if self.net_url.trim().starts_with("sdrpp://") {
+                ui.checkbox(&mut self.net_eight_bit, "8 bit").on_hover_text("Half the traffic; each block is scaled to its peak");
+            } else {
+                ui.add(egui::TextEdit::singleline(&mut self.net_rate_text).desired_width(46.0)).on_hover_text("sample rate, kS/s");
+                egui::ComboBox::from_id_salt("net-format").selected_text(self.net_format.label()).width(64.0).show_ui(ui, |ui| {
+                    for f in [net::Format::I8, net::Format::U8, net::Format::I16, net::Format::F32] {
+                        ui.selectable_value(&mut self.net_format, f, f.label());
+                    }
+                });
+            }
+            if self.connecting.is_some() {
+                ui.label(RichText::new("connecting…").color(WARN));
+            } else if ui.button("Connect").clicked() {
+                self.connect();
+            }
+            ui.separator();
             ui.label(RichText::new("centre").color(DIM));
             let edit = ui.add(egui::TextEdit::singleline(&mut self.center_text).desired_width(92.0).hint_text("MHz"));
             if edit.lost_focus() {
@@ -1106,6 +1182,9 @@ fn main() -> eframe::Result {
     let mut select_hz = None;
     let mut out_dir = None;
     let mut aircraft_db = None;
+    let mut net_url = None;
+    let mut net_rate = 625_000.0f64;
+    let mut net_format = net::Format::I16;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--center" => center_text = args.next().unwrap_or_default(),
@@ -1115,6 +1194,14 @@ fn main() -> eframe::Result {
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
             "--out-dir" => out_dir = args.next().map(PathBuf::from),
             "--aircraft-db" => aircraft_db = args.next().map(PathBuf::from),
+            "--net" => net_url = args.next(),
+            "--rate" => net_rate = args.next().and_then(|v| v.parse().ok()).unwrap_or(net_rate),
+            "--iq" => {
+                net_format = args
+                    .next()
+                    .and_then(|v| net::Format::parse(&v))
+                    .unwrap_or(net_format)
+            }
             _ => file = Some(PathBuf::from(a)),
         }
     }
@@ -1176,9 +1263,19 @@ fn main() -> eframe::Result {
                     aircraft_db.unwrap_or_else(aircraft::Lookup::default_path),
                 ),
                 filter: Filter::All,
+                net_url: net_url
+                    .clone()
+                    .unwrap_or_else(|| "sdrpp://127.0.0.1:5259".to_string()),
+                net_rate_text: format!("{}", net_rate / 1e3),
+                net_format,
+                net_eight_bit: false,
+                connecting: None,
+                live: false,
             };
             if let Some(f) = &file {
                 app.open(f);
+            } else if net_url.is_some() {
+                app.connect();
             }
             Ok(Box::new(app))
         }),

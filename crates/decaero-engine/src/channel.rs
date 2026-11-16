@@ -364,7 +364,14 @@ pub fn run(
         }
         // A call that has gone is closed after a few seconds; a P channel is
         // given longer, it will be back.
-        let patience = if s.kind == Kind::C { 5.0 } else { 30.0 };
+        let patience = if s.kind == Kind::C {
+            5.0
+        } else if s.frames == 0 {
+            // Nothing decoded yet: it was probably never a carrier.
+            12.0
+        } else {
+            30.0
+        };
         if running.is_some() && seconds - quiet_since > patience {
             break;
         }
