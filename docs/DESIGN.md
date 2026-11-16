@@ -150,9 +150,14 @@ Square, redrawn at 60 frames a second, small dots.
     switched on. A picker, rate choice and gain sliders in the top bar;
     `--radio KEY [--rate HZ]`. The engine scales its FFT with the sample
     rate and the deep scan covers the middle 1.5 MHz of a wide input.
-    **Built and checked at 2.5 MS/s on an upsampled recording; not yet run on
-    a real radio** (the radios on this machine may be in use by other apps:
-    ask before opening one).
+    Bias-T is a checkbox (HackRF, Airspy, SDRplay, RTL-SDR), off unless ticked
+    and applied when the radio starts; `--bias-tee`.
+    **Run on the ADALM-PLUTO (2026-11-16, no antenna)**: opens in 0.4 s,
+    2 MS/s with no blocks lost, retune and gain act, no decoder started on
+    noise or on the DC spike in 25 s. The other radios are built but not run
+    (they may be in use by other apps: ask before opening one).
+    `cargo run --release -p decaero-radio --example probe -- pluto 1545.0`
+    exercises a radio without the GUI.
 
 Still to do, roughly in this order:
 

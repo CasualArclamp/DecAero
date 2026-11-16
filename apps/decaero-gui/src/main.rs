@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
 
 mod aircraft;
 mod audio;
@@ -98,6 +98,8 @@ struct App {
     radio_pick: usize,
     radio_rate: f64,
     radio_gains: Vec<decaero_radio::Gain>,
+    /// Power on the antenna port for an LNA, applied when the radio starts.
+    radio_bias: bool,
     /// Gain control of the radio that is running.
     radio_control: Option<Arc<dyn decaero_radio::RadioControl>>,
     /// A radio was asked for on the command line: show its gains at once.
@@ -200,6 +202,7 @@ impl App {
                 .iter()
                 .map(|g| (g.name.clone(), g.value))
                 .collect(),
+            bias_tee: self.radio_bias,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -412,6 +415,14 @@ impl App {
                             ui.selectable_value(&mut self.radio_rate, r, format!("{:.3} MS/s", r / 1e6));
                         }
                     });
+                // Only for radios that have one, and never on by itself.
+                if let Some(volts) = self.radios.get(self.radio_pick).and_then(|r| r.bias_tee) {
+                    ui.checkbox(&mut self.radio_bias, "bias-T").on_hover_text(format!(
+                        "{volts} on the antenna port for an LNA. Takes effect when the radio is started."
+                    ));
+                } else {
+                    self.radio_bias = false;
+                }
                 if self.connecting.is_none()
                     && ui.button("Start radio").on_hover_text("Opens the radio, receive only, tuned to the centre frequency").clicked()
                 {
@@ -1313,6 +1324,7 @@ fn main() -> eframe::Result {
     let mut net_url = None;
     let mut radio_key: Option<String> = None;
     let mut rate_given = false;
+    let mut bias_arg = false;
     let mut net_rate = 625_000.0f64;
     let mut net_format = net::Format::I16;
     while let Some(a) = args.next() {
@@ -1330,6 +1342,7 @@ fn main() -> eframe::Result {
                 rate_given = true;
             }
             "--radio" => radio_key = args.next(),
+            "--bias-tee" => bias_arg = true,
             "--iq" => {
                 net_format = args
                     .next()
@@ -1408,6 +1421,7 @@ fn main() -> eframe::Result {
                 radio_pick: 0,
                 radio_rate: 2e6,
                 radio_gains: Vec::new(),
+                radio_bias: bias_arg,
                 radio_control: None,
                 radio_arg: radio_key.is_some(),
                 live: false,

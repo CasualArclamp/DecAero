@@ -1,7 +1,7 @@
 // made by CasualArclamp
 //! The radios DecAero can drive: the same ones as DecSAT, through DecSAT's
 //! own drivers (`decsat-io`). Receive only: nothing here opens a transmit
-//! path, and no bias tee is switched on.
+//! path, and a bias tee is switched on only when the request asks for it.
 //!
 //! The generic description of a radio (its rates and gain stages, so the GUI
 //! can draw controls for any of them) is DecSAT's `decsat-remote/src/radios.rs`
@@ -33,6 +33,9 @@ pub struct RadioInfo {
     /// Sample rates offered, Hz, lowest first.
     pub rates: Vec<f64>,
     pub gains: Vec<Gain>,
+    /// What the radio can put on its antenna port to feed an LNA, if
+    /// anything (the voltage, for the label).
+    pub bias_tee: Option<&'static str>,
 }
 
 /// What to open.
@@ -43,6 +46,9 @@ pub struct RadioRequest {
     pub sample_rate: f64,
     /// Stages left out keep the radio's defaults.
     pub gains: Vec<(String, f64)>,
+    /// Power on the antenna port for an LNA. Off unless the user asks: it
+    /// puts DC on whatever is plugged in.
+    pub bias_tee: bool,
 }
 
 /// Live controls of an open radio.
@@ -88,6 +94,7 @@ pub fn list() -> Vec<RadioInfo> {
         max_hz: 6e9,
         rates: vec![2e6, 4e6, 8e6, 10e6, 12.5e6, 16e6, 20e6],
         gains: hackrf_gains(),
+        bias_tee: Some("3.3 V"),
     });
     #[cfg(feature = "airspy")]
     v.push(RadioInfo {
@@ -100,6 +107,7 @@ pub fn list() -> Vec<RadioInfo> {
             .map(|r| f64::from(*r))
             .collect(),
         gains: airspy_gains(),
+        bias_tee: Some("4.5 V"),
     });
     #[cfg(feature = "pluto")]
     v.push(RadioInfo {
@@ -109,6 +117,7 @@ pub fn list() -> Vec<RadioInfo> {
         max_hz: 6e9,
         rates: vec![2e6, 4e6, 64e6 / 7.0, 16e6, 20e6],
         gains: pluto_gains(),
+        bias_tee: None,
     });
     #[cfg(feature = "sdrplay")]
     v.push(RadioInfo {
@@ -121,6 +130,7 @@ pub fn list() -> Vec<RadioInfo> {
             .map(|r| f64::from(*r))
             .collect(),
         gains: sdrplay_gains(),
+        bias_tee: Some("where the model has one"),
     });
     #[cfg(feature = "fobos")]
     v.push(RadioInfo {
@@ -133,6 +143,7 @@ pub fn list() -> Vec<RadioInfo> {
             .map(|r| f64::from(*r))
             .collect(),
         gains: fobos_gains(),
+        bias_tee: None,
     });
     #[cfg(all(windows, feature = "rtl"))]
     v.push(RadioInfo {
@@ -145,6 +156,7 @@ pub fn list() -> Vec<RadioInfo> {
             stage("auto", 0.0, 1.0, 1.0, 0.0),
             stage("gain", 0.0, 49.6, 0.1, 40.0),
         ],
+        bias_tee: Some("4.5 V"),
     });
     #[cfg(all(windows, feature = "uhd"))]
     v.push(RadioInfo {
@@ -154,6 +166,7 @@ pub fn list() -> Vec<RadioInfo> {
         max_hz: 6e9,
         rates: vec![1e6, 2e6, 4e6, 5e6, 8e6, 10e6],
         gains: vec![stage("gain", 0.0, 76.0, 1.0, 40.0)],
+        bias_tee: None,
     });
     for r in &mut v {
         r.rates.sort_by(f64::total_cmp);
@@ -362,7 +375,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                     center_hz: req.center_hz as u64,
                     sample_rate: req.sample_rate as u32,
                     gains: hackrf_of(&gains),
-                    bias_tee: false,
+                    bias_tee: req.bias_tee && info.bias_tee.is_some(),
                 })?;
                 let live = Live {
                     ctl: s.control(),
@@ -378,7 +391,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                     center_hz: req.center_hz as u64,
                     sample_rate: req.sample_rate as u32,
                     gains: airspy_of(&gains),
-                    bias_tee: false,
+                    bias_tee: req.bias_tee && info.bias_tee.is_some(),
                 })?;
                 let live = Live {
                     ctl: s.control(),
@@ -411,7 +424,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                     sample_rate: req.sample_rate as u32,
                     gains: sdrplay_of(&gains),
                     tuner_b: value(&gains, "tuner_b") >= 0.5,
-                    bias_tee: false,
+                    bias_tee: req.bias_tee && info.bias_tee.is_some(),
                 })?;
                 let live = Live {
                     ctl: s.control(),
@@ -444,7 +457,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                     rate: req.sample_rate as u32,
                     gain_tenths: (value(&gains, "gain") * 10.0) as i32,
                     manual_gain: value(&gains, "auto") < 0.5,
-                    bias_tee: false,
+                    bias_tee: req.bias_tee && info.bias_tee.is_some(),
                     ..Default::default()
                 })?;
                 let live = Live {
@@ -526,6 +539,7 @@ mod tests {
             center_hz,
             sample_rate: 2e6,
             gains: vec![],
+            bias_tee: false,
         };
         assert!(open(&ask("no-such-radio", 1.545e9)).is_err());
         // Refused before any hardware is touched.
