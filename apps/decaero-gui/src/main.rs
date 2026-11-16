@@ -16,6 +16,7 @@ mod recorder;
 mod theme;
 
 use decaero_engine::channel::{ChannelId, ChannelStatus, Kind};
+use decaero_engine::feed::FeedOptions;
 use decaero_engine::{Command, Engine, FileSource, LogLine, Options, Source, View, net};
 use eframe::egui::{
     self, Align2, Color32, FontId, Frame, Margin, RichText, Sense, Stroke, Ui, pos2, vec2,
@@ -68,6 +69,11 @@ struct App {
     log: VecDeque<LogLine>,
     log_seen: u64,
     selected: Option<ChannelId>,
+    /// Where messages and positions are sent on to, as in use and as being
+    /// typed in the Feeds window.
+    feeds: FeedOptions,
+    feeds_edit: FeedOptions,
+    feeds_open: bool,
     select_hz: Option<f64>,
     tab: Tab,
     center_text: String,
@@ -128,6 +134,7 @@ impl App {
                 realtime: !self.fast,
                 center_hz: self.center_hz(),
                 follow: self.follow,
+                feeds: self.feeds.clone(),
                 ..Options::default()
             },
         );
@@ -444,6 +451,7 @@ impl App {
             if ui.toggle_value(&mut self.scan, "Scan").on_hover_text("Listen to the newest call").changed() {
                 self.send(Command::Scan(self.scan));
             }
+            ui.toggle_value(&mut self.feeds_open, "Feeds").on_hover_text("Send ACARS messages (JSON over UDP) and ADS-C positions (SBS) to other programs");
             ui.label(RichText::new("vol").color(DIM));
             if ui.add(egui::Slider::new(&mut self.volume, 0.0..=1.0).show_value(false)).changed()
                 && let Some(a) = &self.audio
@@ -489,6 +497,66 @@ impl App {
         });
     }
 
+    fn feeds_window(&mut self, ui: &mut Ui) {
+        let mut open = self.feeds_open;
+        egui::Window::new("Feeds")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                egui::Grid::new("feeds").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    ui.label("ACARS as JSON over UDP");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.feeds_edit.json_udp)
+                            .hint_text("host:port, host:port")
+                            .desired_width(260.0),
+                    )
+                    .on_hover_text("One datagram a message, in JAERO's JSONdump layout. Several collectors: separate them with commas.");
+                    ui.end_row();
+                    ui.label("ADS-C positions as SBS");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.feeds_edit.sbs)
+                            .hint_text("listen:30003  or  host:port")
+                            .desired_width(260.0),
+                    )
+                    .on_hover_text("BaseStation MSG,3 lines over TCP. listen:PORT lets a map connect to us (listen:127.0.0.1:PORT for this computer only); host:port connects to the map.");
+                    ui.end_row();
+                    ui.label("Station name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.feeds_edit.station)
+                            .hint_text("optional, goes in the JSON")
+                            .desired_width(260.0),
+                    );
+                    ui.end_row();
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let changed = self.feeds_edit != self.feeds;
+                    if ui.add_enabled(changed, egui::Button::new("Apply")).clicked() {
+                        self.feeds = self.feeds_edit.clone();
+                        self.send(Command::Feeds(self.feeds.clone()));
+                    }
+                    let f = &self.view.feeds;
+                    let state = if !f.error.is_empty() {
+                        RichText::new(f.error.clone()).color(BAD)
+                    } else {
+                        RichText::new(format!(
+                            "JSON: {} sent to {} · SBS: {} sent, {} connected",
+                            f.json_sent, f.json_targets, f.sbs_sent, f.sbs_peers
+                        ))
+                        .color(DIM)
+                    };
+                    ui.label(state.size(11.0));
+                });
+                ui.label(
+                    RichText::new("Positions come from aircraft (R and T channels, C-band); the L-band P channels carry the ground's side.")
+                        .color(DIM)
+                        .size(11.0),
+                );
+            });
+        self.feeds_open = open;
+    }
+
     fn status_bar(&self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let v = &self.view;
@@ -531,6 +599,26 @@ impl App {
                         None => format!("calls are saved to {}", r.dir().display()),
                     }),
                     None => "not recording".to_string(),
+                },
+                {
+                    let f = &v.feeds;
+                    if !f.error.is_empty() {
+                        f.error.clone()
+                    } else if f.json_targets == 0 && !f.sbs_on {
+                        "feeds off".to_string()
+                    } else {
+                        let mut parts = Vec::new();
+                        if f.json_targets > 0 {
+                            parts.push(format!("JSON {} sent", f.json_sent));
+                        }
+                        if f.sbs_on {
+                            parts.push(format!(
+                                "SBS {} sent, {} connected",
+                                f.sbs_sent, f.sbs_peers
+                            ));
+                        }
+                        parts.join(" · ")
+                    }
                 },
             ] {
                 ui.label(RichText::new(part).color(DIM));
@@ -1318,6 +1406,7 @@ impl eframe::App for App {
                 self.gain_bar(ui);
             }
         });
+        self.feeds_window(ui);
         egui::Panel::bottom("status")
             .frame(plain(PANEL))
             .show(ui, |ui| self.status_bar(ui));
@@ -1357,6 +1446,7 @@ fn main() -> eframe::Result {
     let mut radio_key: Option<String> = None;
     let mut rate_given = false;
     let mut bias_arg = false;
+    let mut feeds = FeedOptions::default();
     let mut adds: Vec<(f64, f64)> = Vec::new();
     let mut net_rate = 625_000.0f64;
     let mut net_format = net::Format::I16;
@@ -1369,6 +1459,9 @@ fn main() -> eframe::Result {
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
             "--out-dir" => out_dir = args.next().map(PathBuf::from),
             "--aircraft-db" => aircraft_db = args.next().map(PathBuf::from),
+            "--json-udp" => feeds.json_udp = args.next().unwrap_or_default(),
+            "--sbs" => feeds.sbs = args.next().unwrap_or_default(),
+            "--station" => feeds.station = args.next().unwrap_or_default(),
             "--net" => net_url = args.next(),
             "--rate" => {
                 net_rate = args.next().and_then(|v| v.parse().ok()).unwrap_or(net_rate);
@@ -1420,6 +1513,9 @@ fn main() -> eframe::Result {
                 log: VecDeque::new(),
                 log_seen: 0,
                 selected: None,
+                feeds_edit: feeds.clone(),
+                feeds,
+                feeds_open: false,
                 select_hz,
                 tab: Tab::Messages,
                 center_text,

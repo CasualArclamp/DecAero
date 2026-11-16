@@ -9,6 +9,7 @@
 //! "voice follow".
 
 pub mod channel;
+pub mod feed;
 pub mod net;
 pub mod scanner;
 pub mod survey;
@@ -113,6 +114,8 @@ pub struct Options {
     pub follow: bool,
     /// dB over the floor a carrier must reach to be given a decoder.
     pub carrier_db: f32,
+    /// Where decoded messages and positions are sent on to.
+    pub feeds: feed::FeedOptions,
 }
 
 impl Default for Options {
@@ -123,6 +126,7 @@ impl Default for Options {
             center_hz: 0.0,
             follow: true,
             carrier_db: 4.0,
+            feeds: feed::FeedOptions::default(),
         }
     }
 }
@@ -178,6 +182,8 @@ pub struct View {
     pub listening: Option<ChannelId>,
     /// The input is one real signal: only the upper half of the band counts.
     pub real: bool,
+    /// How the feeds out are doing.
+    pub feeds: feed::FeedCounts,
 }
 
 pub enum Command {
@@ -193,6 +199,8 @@ pub enum Command {
     Follow(bool),
     Pause(bool),
     SetCenter(f64),
+    /// Change where the feeds go.
+    Feeds(feed::FeedOptions),
 }
 
 struct Worker {
@@ -357,6 +365,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     // again by itself until the user adds one or a call is assigned there.
     let mut deleted: Vec<(f64, f64)> = Vec::new();
     let mut deleted_ids: Vec<ChannelId> = Vec::new();
+    let mut feeds = feed::Feeds::start(options.feeds.clone());
     let mut next_id: ChannelId = 1;
     let mut row_seq = 0u64;
     let mut log_seq = 0u64;
@@ -482,6 +491,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     scan = false;
                     shared.audio.lock().unwrap().clear();
                 }
+                Command::Feeds(o) => feeds.configure(o),
                 Command::Scan(on) => scan = on,
                 Command::Follow(on) => options.follow = on,
                 Command::Pause(on) => paused = on,
@@ -511,6 +521,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 options.center_hz,
                 &mut Vec::new(),
                 &mut Vec::new(),
+                &feeds,
             );
             let mut v = shared.view.lock().unwrap();
             v.ended = true;
@@ -599,6 +610,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             options.center_hz,
             &mut assignments,
             &mut finds,
+            &feeds,
         );
 
         // Voice follow, part three: what the deep scan found under the noise.
@@ -788,6 +800,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             v.dropped_blocks = dropped;
             v.load = load;
             v.listening = listening;
+            v.feeds = feeds.counts();
             v.real = mirror_below;
             // A live source says here when its link has gone.
             if source.live() {
@@ -838,6 +851,7 @@ fn drain_events(
     center_hz: f64,
     assignments: &mut Vec<decaero_core::su::CAssignment>,
     finds: &mut Vec<(f64, u32)>,
+    feeds: &feed::Feeds,
 ) {
     let mut lines = Vec::new();
     let mut line =
@@ -925,10 +939,15 @@ fn drain_events(
             Event::Acars {
                 channel,
                 seconds,
-                aes,
-                ges,
+                link,
                 acars,
             } => {
+                // What an aircraft's own text says: its flight and, in an
+                // ADS-C report, where it is.
+                let down = link
+                    .from_aircraft
+                    .then(|| decaero_core::adsc::parse(&acars.text));
+                feeds.acars(&link, &acars, down.as_ref());
                 let title = format!(
                     "ACARS {} label {} block {}{}",
                     acars.registration,
@@ -940,14 +959,23 @@ fn drain_events(
                         " (parity error)"
                     }
                 );
+                let mut text = acars.text;
+                if let Some(d) = down.filter(|d| !d.groups.is_empty()) {
+                    text = format!(
+                        "{}
+ADS-C {}",
+                        text.trim_end(),
+                        d.describe()
+                    );
+                }
                 line(
                     seconds,
                     channel,
                     Kind::P(0),
-                    Some(aes),
-                    Some(ges),
+                    Some(link.aes),
+                    Some(link.ges),
                     title,
-                    acars.text,
+                    text,
                     true,
                 );
             }

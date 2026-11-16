@@ -179,10 +179,31 @@ Square, redrawn at 60 frames a second, small dots.
     Rory's has been tried.
 13. A real-IF input shows and uses its upper half only (the lower is its mirror).
 
+## Feeds out
+
+`decaero-engine/src/feed.rs`, after JAERO (`mainwindow.cpp`, `sbs1.cpp`). One
+thread owns the sockets.
+
+- **ACARS as JSON over UDP**: one datagram a message in JAERO's "JSONdump"
+  layout (`app`, `isu.acars`, `isu.src`/`dst`, `qno`, `refno`, `t`, `station`),
+  to any number of `host:port` collectors. `app.name` is "DecAero".
+- **ADS-C positions as SBS**: a BaseStation `MSG,3` line for every report with
+  a position, over TCP; `listen:PORT` (a map connects) or `host:port` (we
+  connect, retried every 5 s). Fields as JAERO sends them: time taken, time
+  now, flight, altitude, ground speed, track, latitude, longitude, vertical rate.
+- ADS-C groups are read in `decaero-core/src/adsc.rs` (ARINC 622 check, then
+  JAERO's group layouts) and also shown in words under the message in the log.
+- Set from the Feeds window, or `--json-udp`, `--sbs`, `--station` on the GUI
+  and the headless runner. Not remembered between runs until there is a prefs file.
+- Not done: a report split over several ACARS blocks is not put back together
+  (its check fails, so it is passed on as text only); the ground's ADS-C
+  requests on the P channel are not read; libacars-style decoded JSON is not added.
+- Checked on JAERO's 10.5k burst sample: six messages out as JSON, three
+  position lines out as SBS, to a local listener.
+
 Still to do, roughly in this order:
 
 - Tone frames synthesised (ringback is silent now).
-- JAERO-style ACARS / ADS-C feeds out (JSON over UDP, SBS).
 - Channel activity history (the heat map), kept across restarts; call log file.
 - decsat-server's compressed link as an input; a prefs file.
 - A test modulator crate, so the sensitivity figures are regression tests.

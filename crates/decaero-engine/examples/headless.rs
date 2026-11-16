@@ -11,6 +11,19 @@ fn main() {
     // `--add HZ:WIDTH` draws a decoder's box by hand, as a drag in the GUI
     // does; `--no-follow` leaves everything else alone.
     let follow = !args.iter().any(|a| a == "--no-follow");
+    // Feeds out: `--json-udp HOST:PORT`, `--sbs listen:PORT|HOST:PORT`,
+    // `--station NAME`.
+    let value = |name: &str| {
+        args.windows(2)
+            .find(|w| w[0] == name)
+            .map(|w| w[1].clone())
+            .unwrap_or_default()
+    };
+    let feeds = decaero_engine::feed::FeedOptions {
+        json_udp: value("--json-udp"),
+        sbs: value("--sbs"),
+        station: value("--station"),
+    };
     // A URL is a live input, run for `--seconds N` (30 by default).
     let live = path.contains("://");
     let seconds: f64 = args
@@ -43,6 +56,7 @@ fn main() {
             realtime: false,
             center_hz,
             follow,
+            feeds,
             ..Options::default()
         },
     );

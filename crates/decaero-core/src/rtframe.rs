@@ -13,6 +13,7 @@
 
 use crate::fec::{self, Encoder, Viterbi};
 use crate::pframe::{SU_BYTES, SignalUnit, UNIQUE_WORD};
+use crate::su::UserData;
 
 /// Octets in an R channel signal unit without its CRC.
 pub const R_BYTES: usize = 17;
@@ -345,9 +346,8 @@ impl RReassembler {
         Self::default()
     }
 
-    /// Give every R unit; returns (aircraft, ground station, data) when one
-    /// completes a piece of user data.
-    pub fn push(&mut self, unit: &[u8; R_BYTES]) -> Option<(u32, u8, Vec<u8>)> {
+    /// Give every R unit; returns the user data when one completes it.
+    pub fn push(&mut self, unit: &[u8; R_BYTES]) -> Option<UserData> {
         let head = r_data(unit)?;
         for p in &mut self.partial {
             p.age += 1;
@@ -400,7 +400,13 @@ impl RReassembler {
             if let Some(n) = done.length {
                 done.bytes.truncate(n);
             }
-            return Some((done.head.aes, done.head.ges, done.bytes));
+            return Some(UserData {
+                aes: done.head.aes,
+                ges: done.head.ges,
+                q_no: done.head.q_no,
+                ref_no: done.head.ref_no,
+                bytes: done.bytes,
+            });
         }
         None
     }
@@ -533,6 +539,7 @@ mod tests {
         let mut second = [0u8; R_BYTES];
         second[..6].copy_from_slice(&[0x34, 0x38, 0x7C, 0x4A, 0x21, 0x82]);
         second[6..10].copy_from_slice(&data[11..]);
-        assert_eq!(r.push(&second), Some((0x7C4A21, 0x82, data)));
+        let whole = r.push(&second).expect("complete");
+        assert_eq!((whole.aes, whole.ges, whole.bytes), (0x7C4A21, 0x82, data));
     }
 }

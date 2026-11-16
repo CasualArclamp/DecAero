@@ -164,6 +164,9 @@ pub fn p_meaning(b: &[u8; SU_BYTES]) -> Meaning {
 pub struct UserData {
     pub aes: u32,
     pub ges: u8,
+    /// Priority queue and reference number, which together name the message.
+    pub q_no: u8,
+    pub ref_no: u8,
     pub bytes: Vec<u8>,
 }
 
@@ -215,6 +218,8 @@ impl Reassembler {
                 return Some(UserData {
                     aes: new.aes,
                     ges: new.ges,
+                    q_no: new.q_no,
+                    ref_no: new.ref_no,
                     bytes: new.bytes,
                 });
             }
@@ -244,6 +249,8 @@ impl Reassembler {
         Some(UserData {
             aes: done.aes,
             ges: done.ges,
+            q_no: done.q_no,
+            ref_no: done.ref_no,
             bytes: done.bytes,
         })
     }

@@ -7,6 +7,7 @@
 //! acquisition. Once that names a bit rate and a carrier, the kept blocks are
 //! played through the real chain, so nothing from the start is lost.
 
+use crate::feed::Link;
 use decaero_ambe::{Decoder as VoiceDecoder, FRAME_SAMPLES, FrameKind};
 use decaero_core::cframe::CDecoder;
 use decaero_core::pframe::{PDecoder, PFormat, SU_BYTES};
@@ -166,8 +167,7 @@ pub enum Event {
     Acars {
         channel: ChannelId,
         seconds: f64,
-        aes: u32,
-        ges: u8,
+        link: Link,
         acars: Acars,
     },
     /// User data that is not ACARS.
@@ -545,8 +545,13 @@ fn process(
                             Some(acars) => Event::Acars {
                                 channel: id,
                                 seconds,
-                                aes: data.aes,
-                                ges: data.ges,
+                                link: Link {
+                                    aes: data.aes,
+                                    ges: data.ges,
+                                    q_no: data.q_no,
+                                    ref_no: data.ref_no,
+                                    from_aircraft: false,
+                                },
                                 acars,
                             },
                             None => Event::Data {
@@ -679,20 +684,25 @@ fn process(
                     text,
                 });
             };
-            let message = |aes, ges, bytes: Vec<u8>| match su::acars(&bytes) {
+            let message = |data: su::UserData| match su::acars(&data.bytes) {
                 Some(acars) => Event::Acars {
                     channel: id,
                     seconds,
-                    aes,
-                    ges,
+                    link: Link {
+                        aes: data.aes,
+                        ges: data.ges,
+                        q_no: data.q_no,
+                        ref_no: data.ref_no,
+                        from_aircraft: true,
+                    },
                     acars,
                 },
                 None => Event::Data {
                     channel: id,
                     seconds,
-                    aes,
-                    ges,
-                    bytes,
+                    aes: data.aes,
+                    ges: data.ges,
+                    bytes: data.bytes,
                 },
             };
             match &d.burst {
@@ -711,8 +721,8 @@ fn process(
                                 format!("R burst: user data {} of {}", h.index + 1, h.total),
                                 format!("{hex}\n{quality}"),
                             );
-                            if let Some((aes, ges, bytes)) = path.r_data.push(unit) {
-                                let _ = events.send(message(aes, ges, bytes));
+                            if let Some(data) = path.r_data.push(unit) {
+                                let _ = events.send(message(data));
                             }
                         }
                         None => log(
@@ -735,7 +745,7 @@ fn process(
                     );
                     for u in units.iter().filter(|u| u.crc_ok) {
                         if let Some(data) = path.t_data.push(&u.bytes) {
-                            let _ = events.send(message(data.aes, data.ges, data.bytes));
+                            let _ = events.send(message(data));
                         }
                     }
                     last_unit = Some("T burst".to_string());
