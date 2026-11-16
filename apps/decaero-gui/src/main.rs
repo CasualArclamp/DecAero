@@ -1426,7 +1426,13 @@ fn main() -> eframe::Result {
                 radio_arg: radio_key.is_some(),
                 live: false,
             };
-            app.pick_radio(0);
+            // The HydraSDR (the Airspy driver) is the usual radio here.
+            let usual = app
+                .radios
+                .iter()
+                .position(|r| r.key == "airspy")
+                .unwrap_or(0);
+            app.pick_radio(usual);
             if let Some(f) = &file {
                 app.open(f);
             } else if net_url.is_some() {

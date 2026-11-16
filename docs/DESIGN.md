@@ -159,6 +159,12 @@ Square, redrawn at 60 frames a second, small dots.
     `cargo run --release -p decaero-radio --example probe -- pluto 1545.0`
     exercises a radio without the GUI.
 
+11. CI on Actions (build and test on Windows and Linux, clippy, fmt) and a
+    release workflow that builds the portable `decaero-gui.exe` (static C
+    runtime, Windows GUI subsystem so no console window) into a draft release
+    of a tag. `scriptsuild-portable.ps1` does the same build into `exe\`.
+    **Done.**
+
 Still to do, roughly in this order:
 
 - R and T channel bursts (C-band side).
@@ -167,5 +173,4 @@ Still to do, roughly in this order:
 - Channel activity history (the heat map), kept across restarts; call log file.
 - decsat-server's compressed link as an input; a prefs file.
 - Real IF input: hide the mirror half of the band.
-- CI on Actions and the portable exe (no console window).
 - A test modulator crate, so the sensitivity figures are regression tests.
