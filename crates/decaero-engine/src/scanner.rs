@@ -27,6 +27,11 @@ const KEEP: f32 = 0.6;
 /// several segments are averaged, and for the first look.
 const MIN_STRENGTH: f32 = 3.6;
 const FIRST_STRENGTH: f32 = 5.0;
+/// Channels scanned on each side of the centre. A radio running at several
+/// MS/s has hundreds of channels and each keeps a spectrum in memory: the
+/// scan then covers the middle 1.5 MHz or so, which is more than the Aero
+/// channels of one beam take.
+const EACH_SIDE: usize = 80;
 
 pub fn run(
     in_rate: f64,
@@ -46,11 +51,15 @@ pub fn run(
     let window: Vec<f32> = (0..n)
         .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
         .collect();
+    // Channel k is k steps above the centre, or n - k below it.
+    let scanned: Vec<usize> = (0..n).filter(|&k| k.min(n - k) <= EACH_SIDE).collect();
     let mut pending: Vec<Complex32> = Vec::new();
     let mut frame = vec![Complex32::default(); n];
     let mut hops = 0u64;
-    let mut segments: Vec<Vec<Complex32>> = (0..n).map(|_| Vec::with_capacity(SEGMENT)).collect();
-    let mut spectra: Vec<LineSpectrum> = (0..n)
+    let mut segments: Vec<Vec<Complex32>> = (0..scanned.len())
+        .map(|_| Vec::with_capacity(SEGMENT))
+        .collect();
+    let mut spectra: Vec<LineSpectrum> = (0..scanned.len())
         .map(|_| LineSpectrum::new(out_rate, SEGMENT))
         .collect();
     let mut since_look = 0;
@@ -69,7 +78,8 @@ pub fn run(
             fft.process(&mut frame);
             // A tone on channel k turns k quarter circles from one hop to
             // the next: take that out so each channel is at baseband.
-            for (k, (seg, &v)) in segments.iter_mut().zip(&frame).enumerate() {
+            for (seg, &k) in segments.iter_mut().zip(&scanned) {
+                let v = frame[k];
                 let turned = match (k as u64 * hops) & 3 {
                     0 => v,
                     1 => Complex32::new(v.im, -v.re),
@@ -96,7 +106,7 @@ pub fn run(
         since_look = 0;
         let threshold = if first { FIRST_STRENGTH } else { MIN_STRENGTH };
         first = false;
-        for (k, spectrum) in spectra.iter_mut().enumerate() {
+        for (spectrum, &k) in spectra.iter_mut().zip(&scanned) {
             let centre = if k < n / 2 {
                 k as f64
             } else {

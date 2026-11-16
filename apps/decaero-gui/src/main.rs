@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--out-dir DIR]`
 
 mod aircraft;
 mod audio;
@@ -23,6 +23,7 @@ use eframe::egui::{
 use num_complex::Complex32;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use theme::*;
 
@@ -35,6 +36,15 @@ enum Tab {
     Messages,
     Signalling,
 }
+
+/// A live input once it is open: the source, and a radio's gain control.
+type Opened = Result<
+    (
+        Box<dyn Source>,
+        Option<Arc<dyn decaero_radio::RadioControl>>,
+    ),
+    String,
+>;
 
 /// Which aircraft to list.
 #[derive(PartialEq, Clone, Copy)]
@@ -82,7 +92,16 @@ struct App {
     net_rate_text: String,
     net_format: net::Format,
     net_eight_bit: bool,
-    connecting: Option<std::sync::mpsc::Receiver<Result<net::NetSource, String>>>,
+    connecting: Option<std::sync::mpsc::Receiver<Opened>>,
+    /// The radios this build drives, which one is picked, its rate and gains.
+    radios: Vec<decaero_radio::RadioInfo>,
+    radio_pick: usize,
+    radio_rate: f64,
+    radio_gains: Vec<decaero_radio::Gain>,
+    /// Gain control of the radio that is running.
+    radio_control: Option<Arc<dyn decaero_radio::RadioControl>>,
+    /// A radio was asked for on the command line: show its gains at once.
+    radio_arg: bool,
     /// The engine is on a live input (no pause, no file speed).
     live: bool,
     /// Which aircraft the right-hand table shows.
@@ -154,11 +173,55 @@ impl App {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ =
-                tx.send(net::open(&url, rate, format, options).map_err(|e| format!("{url}: {e}")));
+            let opened = net::open(&url, rate, format, options)
+                .map(|s| (Box::new(s) as Box<dyn Source>, None))
+                .map_err(|e| format!("{url}: {e}"));
+            let _ = tx.send(opened);
         });
         self.connecting = Some(rx);
         self.error = None;
+    }
+
+    /// Open the picked radio. This takes the device, so it happens only on
+    /// the user's click (or `--radio`), and on a thread: some take a while.
+    fn start_radio(&mut self) {
+        let Some(info) = self.radios.get(self.radio_pick).cloned() else {
+            return;
+        };
+        // Let go of whatever is running first: it may be this same radio.
+        self.engine = None;
+        self.radio_control = None;
+        let request = decaero_radio::RadioRequest {
+            key: info.key.clone(),
+            center_hz: self.center_hz(),
+            sample_rate: self.radio_rate,
+            gains: self
+                .radio_gains
+                .iter()
+                .map(|g| (g.name.clone(), g.value))
+                .collect(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let opened = decaero_radio::open(&request)
+                .map(|s| {
+                    let control = s.control();
+                    (Box::new(s) as Box<dyn Source>, control)
+                })
+                .map_err(|e| format!("{}: {e}", info.name));
+            let _ = tx.send(opened);
+        });
+        self.connecting = Some(rx);
+        self.error = None;
+    }
+
+    /// The picked radio changed: take its lowest rate and its default gains.
+    fn pick_radio(&mut self, index: usize) {
+        self.radio_pick = index;
+        if let Some(info) = self.radios.get(index) {
+            self.radio_rate = info.rates.first().copied().unwrap_or(2e6);
+            self.radio_gains = info.gains.clone();
+        }
     }
 
     fn send(&self, c: Command) {
@@ -174,7 +237,10 @@ impl App {
         {
             self.connecting = None;
             match result {
-                Ok(source) => self.start(Box::new(source)),
+                Ok((source, control)) => {
+                    self.radio_control = control;
+                    self.start(source);
+                }
                 Err(e) => self.error = Some(e),
             }
         }
@@ -325,6 +391,34 @@ impl App {
                 self.connect();
             }
             ui.separator();
+            // A radio of this machine.
+            if !self.radios.is_empty() {
+                let picked = self.radios.get(self.radio_pick).map_or(String::new(), |r| r.name.clone());
+                let mut pick = self.radio_pick;
+                egui::ComboBox::from_id_salt("radio").selected_text(picked).width(150.0).show_ui(ui, |ui| {
+                    for (i, r) in self.radios.iter().enumerate() {
+                        ui.selectable_value(&mut pick, i, &r.name);
+                    }
+                });
+                if pick != self.radio_pick {
+                    self.pick_radio(pick);
+                }
+                let rates = self.radios.get(self.radio_pick).map(|r| r.rates.clone()).unwrap_or_default();
+                egui::ComboBox::from_id_salt("radio-rate")
+                    .selected_text(format!("{:.3} MS/s", self.radio_rate / 1e6))
+                    .width(86.0)
+                    .show_ui(ui, |ui| {
+                        for r in rates {
+                            ui.selectable_value(&mut self.radio_rate, r, format!("{:.3} MS/s", r / 1e6));
+                        }
+                    });
+                if self.connecting.is_none()
+                    && ui.button("Start radio").on_hover_text("Opens the radio, receive only, tuned to the centre frequency").clicked()
+                {
+                    self.start_radio();
+                }
+                ui.separator();
+            }
             ui.label(RichText::new("centre").color(DIM));
             let edit = ui.add(egui::TextEdit::singleline(&mut self.center_text).desired_width(92.0).hint_text("MHz"));
             if edit.lost_focus() {
@@ -349,6 +443,37 @@ impl App {
             ui.label(RichText::new(&self.view.source).color(DIM));
             if let Some(e) = &self.error {
                 ui.label(RichText::new(e).color(BAD));
+            }
+        });
+    }
+
+    /// Gain sliders of the picked radio; they act at once on a running one.
+    fn gain_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("gain").color(DIM));
+            let mut changed = Vec::new();
+            for g in &mut self.radio_gains {
+                if g.max - g.min <= 1.0 && g.step >= 1.0 {
+                    // A switch.
+                    let mut on = g.value >= 0.5;
+                    if ui.checkbox(&mut on, &g.name).changed() {
+                        g.value = f64::from(u8::from(on));
+                        changed.push((g.name.clone(), g.value));
+                    }
+                } else {
+                    ui.label(RichText::new(&g.name).color(DIM));
+                    let slider = egui::Slider::new(&mut g.value, g.min..=g.max).step_by(g.step);
+                    if ui.add(slider).changed() {
+                        changed.push((g.name.clone(), g.value));
+                    }
+                }
+            }
+            if let Some(control) = &self.radio_control {
+                for (name, value) in changed {
+                    if let Err(e) = control.set_gain(&name, value) {
+                        self.error = Some(e.to_string());
+                    }
+                }
             }
         });
     }
@@ -1144,9 +1269,12 @@ impl eframe::App for App {
                 .fill(fill)
                 .inner_margin(Margin::symmetric(8, 6))
         };
-        egui::Panel::top("top")
-            .frame(plain(PANEL))
-            .show(ui, |ui| self.top_bar(ui));
+        egui::Panel::top("top").frame(plain(PANEL)).show(ui, |ui| {
+            self.top_bar(ui);
+            if self.radio_control.is_some() || self.radio_arg {
+                self.gain_bar(ui);
+            }
+        });
         egui::Panel::bottom("status")
             .frame(plain(PANEL))
             .show(ui, |ui| self.status_bar(ui));
@@ -1183,6 +1311,8 @@ fn main() -> eframe::Result {
     let mut out_dir = None;
     let mut aircraft_db = None;
     let mut net_url = None;
+    let mut radio_key: Option<String> = None;
+    let mut rate_given = false;
     let mut net_rate = 625_000.0f64;
     let mut net_format = net::Format::I16;
     while let Some(a) = args.next() {
@@ -1195,7 +1325,11 @@ fn main() -> eframe::Result {
             "--out-dir" => out_dir = args.next().map(PathBuf::from),
             "--aircraft-db" => aircraft_db = args.next().map(PathBuf::from),
             "--net" => net_url = args.next(),
-            "--rate" => net_rate = args.next().and_then(|v| v.parse().ok()).unwrap_or(net_rate),
+            "--rate" => {
+                net_rate = args.next().and_then(|v| v.parse().ok()).unwrap_or(net_rate);
+                rate_given = true;
+            }
+            "--radio" => radio_key = args.next(),
             "--iq" => {
                 net_format = args
                     .next()
@@ -1270,12 +1404,30 @@ fn main() -> eframe::Result {
                 net_format,
                 net_eight_bit: false,
                 connecting: None,
+                radios: decaero_radio::list(),
+                radio_pick: 0,
+                radio_rate: 2e6,
+                radio_gains: Vec::new(),
+                radio_control: None,
+                radio_arg: radio_key.is_some(),
                 live: false,
             };
+            app.pick_radio(0);
             if let Some(f) = &file {
                 app.open(f);
             } else if net_url.is_some() {
                 app.connect();
+            } else if let Some(key) = &radio_key {
+                match app.radios.iter().position(|r| r.key == *key) {
+                    Some(i) => {
+                        app.pick_radio(i);
+                        if rate_given {
+                            app.radio_rate = net_rate;
+                        }
+                        app.start_radio();
+                    }
+                    None => app.error = Some(format!("no radio called {key}")),
+                }
             }
             Ok(Box::new(app))
         }),

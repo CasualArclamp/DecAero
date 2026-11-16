@@ -1,0 +1,33 @@
+# made by CasualArclamp
+[package]
+name = "decaero-radio"
+description = "DecAero's radios: DecSAT's drivers (HackRF, Airspy, Pluto, SDRplay, Fobos, RTL-SDR, UHD) as engine inputs. Receive only"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# libairspy-rs needs Rust 1.95.
+rust-version = "1.95"
+
+[features]
+# All of DecSAT's radios. They are pure Rust or load the maker's library at
+# run time, so none needs anything installed to build.
+default = ["hackrf", "airspy", "pluto", "sdrplay", "fobos", "rtl", "uhd"]
+hackrf = ["decsat-io/hackrf"]
+airspy = ["decsat-io/airspy"]
+pluto = ["decsat-io/pluto"]
+sdrplay = ["decsat-io/sdrplay"]
+fobos = ["decsat-io/fobos"]
+rtl = ["decsat-io/rtl"]
+uhd = ["decsat-io/uhd"]
+
+[dependencies]
+decaero-engine = { path = "../decaero-engine" }
+num-complex.workspace = true
+# DecSAT's I/O crate, pinned to a release. Cargo fetches the whole DecSAT
+# repository for it but builds only these two light crates.
+decsat-io = { git = "https://github.com/CasualArclamp/DecSAT", tag = "v1.10.0" }
+decsat-core = { git = "https://github.com/CasualArclamp/DecSAT", tag = "v1.10.0" }
+
+[lints]
+workspace = true

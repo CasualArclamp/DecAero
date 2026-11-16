@@ -320,11 +320,12 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     let block_len = (rate / 20.0) as usize;
     // No longer than about two blocks, so a narrow input (a receiver's audio)
     // still gets several waterfall rows a second.
-    let n = options
-        .fft_size
+    // Bins of about 60 Hz whatever the rate, so a 600 bit/s carrier is a
+    // clear lump from a radio at several MS/s too.
+    let wanted = ((rate / 60.0) as usize)
         .next_power_of_two()
-        .min(block_len.next_power_of_two())
-        .max(256);
+        .clamp(options.fft_size, 1 << 16);
+    let n = wanted.min(block_len.next_power_of_two()).max(256);
     let mut fft_in: Vec<Complex32> = Vec::new();
     let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
     let window: Vec<f32> = (0..n)

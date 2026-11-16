@@ -144,6 +144,16 @@ Square, redrawn at 60 frames a second, small dots.
    SDR++'s source; not yet tried against a real SDR++ server. The server's
    radio is chosen in SDR++ itself (its remote menu is not shown here).
 
+10. The same radios as DecSAT (`decaero-radio`): HackRF, Airspy, ADALM-PLUTO,
+    SDRplay, Fobos, RTL-SDR and UHD through DecSAT's own drivers (`decsat-io`
+    as a git dependency pinned to v1.10.0), receive only, bias tee never
+    switched on. A picker, rate choice and gain sliders in the top bar;
+    `--radio KEY [--rate HZ]`. The engine scales its FFT with the sample
+    rate and the deep scan covers the middle 1.5 MHz of a wide input.
+    **Built and checked at 2.5 MS/s on an upsampled recording; not yet run on
+    a real radio** (the radios on this machine may be in use by other apps:
+    ask before opening one).
+
 Still to do, roughly in this order:
 
 - R and T channel bursts (C-band side).

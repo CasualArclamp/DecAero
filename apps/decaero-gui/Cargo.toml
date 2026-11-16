@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 decaero-engine = { path = "../../crates/decaero-engine" }
 decaero-core = { path = "../../crates/decaero-core" }
+decaero-radio = { path = "../../crates/decaero-radio" }
 num-complex.workspace = true
 # The glow (OpenGL) renderer, as DecSAT: plenty for 2-D and a smaller exe.
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
