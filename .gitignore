@@ -16,3 +16,5 @@
 *.opus
 *.ogg
 /IQ
+# Screenshots of real traffic show aircraft and messages: not committed.
+/docs/images
