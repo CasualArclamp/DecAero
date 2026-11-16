@@ -48,6 +48,12 @@ channels; kept outside the repo) decode through `decaero-core`: P 600 with
   the bits just come out inverted, and the frame decoder accepts both.
 - The header's frame counter runs 0 to 3 at 600 bit/s and 0 to 7 at 1200
   bit/s (an 8 s cycle).
+- `IQ/areo.wav` (625 kS/s, 8-bit, his, not committed) holds sixteen 600 bit/s P
+  channels and one 1200 on a 5 kHz grid: the Rust chain (`aerorx` example)
+  decodes all 17 with every CRC good, 3204 signal units, while the recording
+  drifts 18 Hz in a minute. It also holds two weak 10500 bit/s carriers;
+  `areo2.wav` and `areo4.wav` each hold a weak 8400 bit/s voice carrier.
+- A-QPSK gives the same squared line pair, so one acquisition names all four rates.
 - The input can be real IF (a receiver's audio output), so the front end
   takes real samples as well as IQ.
 
@@ -77,6 +83,10 @@ Eb/N0 and C/N0, level, carrier offset and drift, clock error, phase scatter,
 EVM / MER, **margin** over the decode limit, unique-word hits, **FEC load**
 (share of the code's correcting power in use), pre-FEC BER, corrected bits,
 CRC good / bad, voice frames repeated / muted, CPU.
+
+## Constellation (Rory, 2026-11-16)
+
+Square, redrawn at 60 frames a second, small dots.
 
 ## Voice follow
 

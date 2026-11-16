@@ -1,0 +1,18 @@
+# made by CasualArclamp
+[package]
+name = "decaero-dsp"
+description = "Inmarsat Classic Aero demodulators (A-BPSK, A-QPSK) built for weak signals, and the bench front end"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+decaero-core = { path = "../decaero-core" }
+decaero-ambe = { path = "../decaero-ambe" }
+num-complex.workspace = true
+rustfft.workspace = true
+
+[lints]
+workspace = true

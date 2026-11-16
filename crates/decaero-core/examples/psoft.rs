@@ -10,7 +10,10 @@ fn main() {
     let path = args.next().expect("soft bit file");
     let rate: u32 = args.next().and_then(|r| r.parse().ok()).unwrap_or(600);
     let bytes = std::fs::read(&path).expect("read file");
-    let soft: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let soft: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
     let mut dec = PDecoder::new(PFormat::from_rate(rate).expect("600, 1200 or 10500"));
     let mut frames = Vec::new();
     dec.push(&soft, &mut frames);
@@ -26,7 +29,11 @@ fn main() {
         );
         for u in &f.units {
             let hex: Vec<String> = u.bytes[..10].iter().map(|b| format!("{b:02X}")).collect();
-            println!("   {} {}", if u.crc_ok { "ok " } else { "BAD" }, hex.join(" "));
+            println!(
+                "   {} {}",
+                if u.crc_ok { "ok " } else { "BAD" },
+                hex.join(" ")
+            );
         }
     }
     println!("{:?} locked {}", dec.stats(), dec.locked());
