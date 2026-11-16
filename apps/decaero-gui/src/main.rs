@@ -12,6 +12,7 @@
 mod aircraft;
 mod audio;
 mod band;
+mod prefs;
 mod recorder;
 mod theme;
 
@@ -53,6 +54,14 @@ enum Filter {
     All,
     Us,
     Military,
+}
+
+/// What the command line set, which the kept settings must not undo.
+struct Given {
+    center: bool,
+    net: bool,
+    feeds: bool,
+    radio: bool,
 }
 
 struct Shot {
@@ -114,6 +123,11 @@ struct App {
     live: bool,
     /// Which aircraft the right-hand table shows.
     filter: Filter,
+    /// Settings kept between runs, where they are kept (`None`: this run
+    /// neither reads nor writes them), and when they were last looked at.
+    prefs: prefs::Prefs,
+    prefs_path: Option<PathBuf>,
+    prefs_checked: Instant,
 }
 
 impl App {
@@ -142,6 +156,10 @@ impl App {
             a.attach(engine.audio_tap());
         }
         self.engine = Some(engine);
+        // The engine starts with scan on.
+        if !self.scan {
+            self.send(Command::Scan(false));
+        }
         self.live = live;
         self.paused = false;
         self.band.clear();
@@ -231,6 +249,136 @@ impl App {
         if let Some(info) = self.radios.get(index) {
             self.radio_rate = info.rates.first().copied().unwrap_or(2e6);
             self.radio_gains = info.gains.clone();
+            // What was last used with this radio, where it still fits.
+            if let Some(rate) = self.prefs.read::<f64>(&format!("rate.{}", info.key))
+                && info.rates.iter().any(|r| (r - rate).abs() < 1.0)
+            {
+                self.radio_rate = rate;
+            }
+            for g in &mut self.radio_gains {
+                if let Some(v) = self
+                    .prefs
+                    .read::<f64>(&format!("gain.{}.{}", info.key, g.name))
+                {
+                    g.value = v.clamp(g.min, g.max);
+                }
+            }
+        }
+    }
+
+    /// Put the settings as they are now into `prefs`.
+    fn remember(&mut self) {
+        let p = &mut self.prefs;
+        p.set("center_mhz", self.center_text.trim());
+        p.set("follow", self.follow);
+        p.set("scan", self.scan);
+        p.set("volume", format!("{:.2}", self.volume));
+        p.set(
+            "tab",
+            match self.tab {
+                Tab::Messages => "messages",
+                Tab::Signalling => "signalling",
+            },
+        );
+        p.set(
+            "aircraft",
+            match self.filter {
+                Filter::All => "all",
+                Filter::Us => "us",
+                Filter::Military => "military",
+            },
+        );
+        p.set("net_url", &self.net_url);
+        p.set("net_rate_ks", self.net_rate_text.trim());
+        p.set("net_format", self.net_format.label());
+        p.set("net_8bit", self.net_eight_bit);
+        p.set("json_udp", &self.feeds.json_udp);
+        p.set("sbs", &self.feeds.sbs);
+        p.set("station", &self.feeds.station);
+        p.set("bias_tee", self.radio_bias);
+        if let Some(info) = self.radios.get(self.radio_pick) {
+            p.set("radio", &info.key);
+            p.set(&format!("rate.{}", info.key), self.radio_rate);
+            for g in &self.radio_gains {
+                p.set(&format!("gain.{}.{}", info.key, g.name), g.value);
+            }
+        }
+    }
+
+    /// Take the settings of the last run. What the command line gave stays.
+    fn recall(&mut self, given: &Given) {
+        let p = self.prefs.clone();
+        if !given.center
+            && let Some(v) = p.get("center_mhz")
+        {
+            self.center_text = v.to_string();
+        }
+        self.follow = p.read("follow").unwrap_or(self.follow);
+        self.scan = p.read("scan").unwrap_or(self.scan);
+        self.volume = p
+            .read::<f32>("volume")
+            .unwrap_or(self.volume)
+            .clamp(0.0, 1.0);
+        if let Some(a) = &self.audio {
+            a.set_volume(self.volume);
+        }
+        if p.get("tab") == Some("signalling") {
+            self.tab = Tab::Signalling;
+        }
+        self.filter = match p.get("aircraft") {
+            Some("us") => Filter::Us,
+            Some("military") => Filter::Military,
+            _ => Filter::All,
+        };
+        if !given.net {
+            if let Some(v) = p.get("net_url").filter(|v| !v.is_empty()) {
+                self.net_url = v.to_string();
+            }
+            if let Some(v) = p.get("net_rate_ks").filter(|v| !v.is_empty()) {
+                self.net_rate_text = v.to_string();
+            }
+            if let Some(f) = p.get("net_format").and_then(net::Format::parse) {
+                self.net_format = f;
+            }
+            self.net_eight_bit = p.read("net_8bit").unwrap_or(false);
+        }
+        if !given.feeds {
+            self.feeds = FeedOptions {
+                json_udp: p.get("json_udp").unwrap_or_default().to_string(),
+                sbs: p.get("sbs").unwrap_or_default().to_string(),
+                station: p.get("station").unwrap_or_default().to_string(),
+            };
+            self.feeds_edit = self.feeds.clone();
+        }
+        if !given.radio {
+            // Only a choice: no radio is opened until Start radio is pressed.
+            self.radio_bias = p.read("bias_tee").unwrap_or(false);
+            if let Some(i) = p
+                .get("radio")
+                .and_then(|key| self.radios.iter().position(|r| r.key == key))
+            {
+                self.pick_radio(i);
+            }
+        }
+    }
+
+    /// Once a second: write the settings if they have changed.
+    fn keep_prefs(&mut self) {
+        let Some(path) = self.prefs_path.clone() else {
+            return;
+        };
+        if self.prefs_checked.elapsed().as_secs_f32() < 1.0 {
+            return;
+        }
+        self.prefs_checked = Instant::now();
+        let before = self.prefs.clone();
+        self.remember();
+        if self.prefs != before
+            && let Err(e) = self.prefs.save(&path)
+        {
+            self.error = Some(format!("settings not saved to {}: {e}", path.display()));
+            // Do not try again every second.
+            self.prefs_path = None;
         }
     }
 
@@ -1378,6 +1526,7 @@ fn trend(ui: &Ui, rect: egui::Rect, history: &VecDeque<f32>) {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pull();
+        self.keep_prefs();
         self.screenshot(ctx);
         // Every frame: the waterfall and the constellation move at the
         // display's rate (60 frames a second on most screens).
@@ -1447,6 +1596,8 @@ fn main() -> eframe::Result {
     let mut rate_given = false;
     let mut bias_arg = false;
     let mut feeds = FeedOptions::default();
+    let mut prefs_arg: Option<PathBuf> = None;
+    let mut no_prefs = false;
     let mut adds: Vec<(f64, f64)> = Vec::new();
     let mut net_rate = 625_000.0f64;
     let mut net_format = net::Format::I16;
@@ -1462,6 +1613,8 @@ fn main() -> eframe::Result {
             "--json-udp" => feeds.json_udp = args.next().unwrap_or_default(),
             "--sbs" => feeds.sbs = args.next().unwrap_or_default(),
             "--station" => feeds.station = args.next().unwrap_or_default(),
+            "--prefs" => prefs_arg = args.next().map(PathBuf::from),
+            "--no-prefs" => no_prefs = true,
             "--net" => net_url = args.next(),
             "--rate" => {
                 net_rate = args.next().and_then(|v| v.parse().ok()).unwrap_or(net_rate);
@@ -1562,7 +1715,24 @@ fn main() -> eframe::Result {
                 radio_control: None,
                 radio_arg: radio_key.is_some(),
                 live: false,
+                prefs: prefs::Prefs::default(),
+                prefs_path: None,
+                prefs_checked: Instant::now(),
             };
+            // Settings of the last run. An unattended screenshot run keeps
+            // to its command line: it neither reads nor writes them, unless
+            // it is given a file of its own with `--prefs`.
+            let given = Given {
+                center: !app.center_text.is_empty(),
+                net: net_url.is_some() || rate_given,
+                feeds: app.feeds != FeedOptions::default(),
+                radio: radio_key.is_some() || bias_arg,
+            };
+            if !no_prefs && (app.shot.is_none() || prefs_arg.is_some()) {
+                let path = prefs_arg.clone().unwrap_or_else(prefs::Prefs::default_path);
+                app.prefs = prefs::Prefs::load(&path);
+                app.prefs_path = Some(path);
+            }
             // The HydraSDR (the Airspy driver) is the usual radio here.
             let usual = app
                 .radios
@@ -1570,6 +1740,7 @@ fn main() -> eframe::Result {
                 .position(|r| r.key == "airspy")
                 .unwrap_or(0);
             app.pick_radio(usual);
+            app.recall(&given);
             if let Some(f) = &file {
                 app.open(f);
             } else if net_url.is_some() {

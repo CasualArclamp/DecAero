@@ -205,6 +205,21 @@ the strongest count); and the deep scan found the one strong carrier again in
 every channel of its filter bank, moved by whole steps of half the channel's
 sample rate (now recognised as an echo of a carrier already being decoded).
 
+## Settings
+
+`apps/decaero-gui/src/prefs.rs`: `key = value` lines in
+`%APPDATA%\DecAero\prefs.txt` (`~/.config/DecAero/prefs.txt` elsewhere),
+written a second after anything changes and readable by hand. Kept: centre
+frequency, Follow voice, Scan, volume, log tab, aircraft filter, the network
+input (URL, rate, format, 8 bit), the feeds, the picked radio, and for every
+radio its rate and gains (`rate.KEY`, `gain.KEY.STAGE`) and the bias-T choice.
+
+- The command line wins over the file for whatever it gives.
+- Nothing is opened from the file: a remembered radio (and its bias-T) is
+  only the choice shown, used when Start radio is pressed.
+- An unattended `--screenshot` run neither reads nor writes the file unless
+  given one of its own with `--prefs PATH`. `--no-prefs` turns it off.
+
 ## Feeds out
 
 `decaero-engine/src/feed.rs`, after JAERO (`mainwindow.cpp`, `sbs1.cpp`). One
@@ -220,7 +235,7 @@ thread owns the sockets.
 - ADS-C groups are read in `decaero-core/src/adsc.rs` (ARINC 622 check, then
   JAERO's group layouts) and also shown in words under the message in the log.
 - Set from the Feeds window, or `--json-udp`, `--sbs`, `--station` on the GUI
-  and the headless runner. Not remembered between runs until there is a prefs file.
+  and the headless runner; the GUI remembers them (see Settings).
 - Not done: a report split over several ACARS blocks is not put back together
   (its check fails, so it is passed on as text only); the ground's ADS-C
   requests on the P channel are not read; libacars-style decoded JSON is not added.
@@ -231,5 +246,5 @@ Still to do, roughly in this order:
 
 - Tone frames synthesised (ringback is silent now).
 - Channel activity history (the heat map), kept across restarts; call log file.
-- decsat-server's compressed link as an input; a prefs file.
+- decsat-server's compressed link as an input.
 - A test modulator crate, so the sensitivity figures are regression tests.
