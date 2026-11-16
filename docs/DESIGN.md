@@ -32,6 +32,25 @@ carrier appears. The look is DecSAT's.
 Layouts are taken from JAERO (`aerol.cpp`), which is the open reference; the
 Inmarsat SDM is not public. Constants cite the JAERO function they come from.
 
+## Found on real signals (2026-11-16)
+
+Two of Rory's recordings (real audio IF, 192 kHz, the same signal on both WAV
+channels; kept outside the repo) decode through `decaero-core`: P 600 with
+54 of 54 signal units good, P 1200 with 144 of 144.
+
+- A-BPSK behaves as MSK: squaring the signal gives two lines at
+  2 fc ± Rb / 2. Their mean is twice the carrier and their spacing is the bit
+  rate, which gives carrier and clock to a fraction of a hertz with no loop.
+  This is the acquisition method for weak signals.
+- Sampling the half-sine matched filter once a bit and turning each sample by
+  a further quarter circle leaves an antipodal sequence; a data bit is the
+  product of two neighbours (JAERO `DiffDecode`). Either turning sense works,
+  the bits just come out inverted, and the frame decoder accepts both.
+- The header's frame counter runs 0 to 3 at 600 bit/s and 0 to 7 at 1200
+  bit/s (an 8 s cycle).
+- The input can be real IF (a receiver's audio output), so the front end
+  takes real samples as well as IQ.
+
 ## Crates
 
 - `decaero-ambe`: the voice decoder. Done.
@@ -72,7 +91,7 @@ CRC good / bad, voice frames repeated / muted, CPU.
 ## Milestones
 
 0. Repo, codec port, channel code primitives. **Done.**
-1. Frame codecs and the test modulator; P channel 600/1200 decoded from IQ.
+1. Frame codecs and the test modulator; P channel 600/1200 decoded from IQ. *P frame codec done and proven on real recordings with a numpy demodulator; the Rust demodulator is next.*
 2. A-QPSK: P 10500, C 8400 with voice out; check against JAERO's samples.
 3. R / T bursts.
 4. Engine, voice follow, Ogg Opus recording, call log.
