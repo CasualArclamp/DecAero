@@ -162,7 +162,7 @@ Square, redrawn at 60 frames a second, small dots.
 11. CI on Actions (build and test on Windows and Linux, clippy, fmt) and a
     release workflow that builds the portable `decaero-gui.exe` (static C
     runtime, Windows GUI subsystem so no console window) into a draft release
-    of a tag. `scriptsuild-portable.ps1` does the same build into `exe\`.
+    of a tag. `scripts/build-portable.ps1` does the same build into `exe\`.
     **Done.**
 
 Still to do, roughly in this order:
