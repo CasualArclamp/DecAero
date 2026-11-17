@@ -1,6 +1,8 @@
 <!-- made by CasualArclamp -->
 # DecAero
 
+[![release](https://img.shields.io/github/v/release/CasualArclamp/DecAero?logo=github&label=release)](https://github.com/CasualArclamp/DecAero/releases/latest) [![downloads](https://img.shields.io/github/downloads/CasualArclamp/DecAero/total?logo=github&label=downloads)](https://github.com/CasualArclamp/DecAero/releases)
+
 If you've found this worth your time, please consider [donating via PayPal](https://www.paypal.me/Arclamp).
 
 A receiver for Inmarsat Classic Aero, the satellite link airliners use for
