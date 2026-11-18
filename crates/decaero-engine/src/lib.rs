@@ -122,6 +122,8 @@ pub struct Options {
     pub center_hz: f64,
     /// Start a decoder on every new carrier and every assignment.
     pub follow: bool,
+    /// Follow only inside this part of the band (Hz from the centre).
+    pub follow_range: Option<(f64, f64)>,
     /// dB over the floor a carrier must reach to be given a decoder.
     pub carrier_db: f32,
     /// Where decoded messages and positions are sent on to.
@@ -135,6 +137,7 @@ impl Default for Options {
             realtime: true,
             center_hz: 0.0,
             follow: true,
+            follow_range: None,
             carrier_db: 4.0,
             feeds: feed::FeedOptions::default(),
         }
@@ -528,7 +531,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
 
     let mut menu_seen = 0;
     // Where follow may start decoders (Hz from the centre); everywhere if none.
-    let mut follow_range: Option<(f64, f64)> = None;
+    let mut follow_range: Option<(f64, f64)> = options.follow_range;
     let mut iq: Option<iqrec::IqRecorder> = None;
     while !shared.stop.load(Ordering::Relaxed) {
         // Commands from the GUI.

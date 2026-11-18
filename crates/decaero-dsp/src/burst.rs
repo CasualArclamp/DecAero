@@ -28,7 +28,8 @@ pub struct BurstBits {
     pub es_n0_db: f32,
     /// How long the burst lasted, seconds.
     pub seconds: f64,
-    /// Samples turned onto the real axis, for the constellation.
+    /// For the constellation: samples turned onto the real axis for A-BPSK,
+    /// the two rails paired into four corners for A-QPSK.
     pub scatter: Vec<Complex32>,
 }
 
@@ -245,7 +246,15 @@ pub fn demodulate(
         offset_hz,
         es_n0_db,
         seconds: samples.len() as f64 / rate,
-        scatter: rotated.iter().map(|v| v * scale).collect(),
+        // Offset QPSK is shown with the offset taken out, as the continuous
+        // channels are (`demod.rs`): the four corners of plain QPSK.
+        scatter: match modulation {
+            Modulation::ABpsk => rotated.iter().map(|v| v * scale).collect(),
+            Modulation::AQpsk { .. } => rotated
+                .chunks_exact(2)
+                .map(|pair| Complex32::new(pair[0].re, pair[1].re) * scale)
+                .collect(),
+        },
     })
 }
 

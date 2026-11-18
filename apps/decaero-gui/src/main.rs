@@ -222,6 +222,9 @@ impl App {
     /// Start the engine on a source, a recording or a live one.
     fn start(&mut self, source: Box<dyn Source>) {
         let live = source.live();
+        // The part of the band follow is kept to: as it was, or as the
+        // settings or the command line gave it for the first input.
+        self.follow_range = self.follow_range_arg.take().or(self.follow_range);
         // A new input: whatever menu it has is new too.
         self.menu.clear();
         self.menu_seq = u64::MAX;
@@ -230,7 +233,9 @@ impl App {
             Options {
                 realtime: !self.fast,
                 center_hz: self.center_hz(),
-                follow: self.follow,
+                // Not while the range is still to be dragged.
+                follow: self.follow && !self.follow_pick,
+                follow_range: self.follow_range,
                 feeds: self.feeds.clone(),
                 ..Options::default()
             },
@@ -248,13 +253,7 @@ impl App {
             }
             _ => activity::Activity::new(),
         };
-        // A range picked for follow goes with the input it was picked on.
-        self.follow_pick = false;
-        self.follow_range = self.follow_range_arg.take();
         self.band.follow_range = self.follow_range;
-        if self.follow_range.is_some() {
-            self.send(Command::FollowRange(self.follow_range));
-        }
         // The engine starts with scan on.
         if !self.scan {
             self.send(Command::Scan(false));
@@ -383,7 +382,12 @@ impl App {
     fn remember(&mut self) {
         let p = &mut self.prefs;
         p.set("center_mhz", self.center_text.trim());
-        p.set("follow", self.follow);
+        p.set("follow", self.follow && !self.follow_pick);
+        p.set(
+            "follow_range",
+            self.follow_range
+                .map_or(String::new(), |(lo, hi)| format!("{lo:.0}:{hi:.0}")),
+        );
         p.set("scan", self.scan);
         p.set("volume", format!("{:.2}", self.volume));
         p.set(
@@ -451,6 +455,12 @@ impl App {
             Some("military") => Filter::Military,
             _ => Filter::All,
         };
+        if self.follow_range_arg.is_none()
+            && let Some((lo, hi)) = p.get("follow_range").and_then(|v| v.split_once(':'))
+            && let (Ok(lo), Ok(hi)) = (lo.parse::<f64>(), hi.parse::<f64>())
+        {
+            self.follow_range_arg = Some((lo, hi));
+        }
         if p.get("lower") == Some("activity") {
             self.lower = Lower::Activity;
         }
@@ -812,13 +822,14 @@ impl App {
                 "Centre frequency. Scroll or click a digit to step it, right-click to zero it and those after it. On the band, drag with the middle button to tune.",
             );
             ui.separator();
-            if ui.toggle_value(&mut self.follow, "Follow voice").on_hover_text("Start a decoder on every new carrier and every voice channel a P channel assigns. After turning it on, drag across the band to keep it to that part; without a drag it looks everywhere.").changed() {
-                self.send(Command::Follow(self.follow));
-                // Turned on: the next drag on the band says where to look.
-                // Either way the old range is dropped.
+            if ui.toggle_value(&mut self.follow, "Follow voice").on_hover_text("Start a decoder on every new carrier and every voice channel a P channel assigns. After turning it on, drag across the band where it should look: it starts once you have (drag across all of it for everywhere).").changed() {
+                // Turned on: nothing is started yet. The next drag on the
+                // band says where to look, and follow begins there. Either
+                // way the old range is dropped.
                 self.follow_pick = self.follow;
                 self.follow_range = None;
                 self.band.follow_range = None;
+                self.send(Command::Follow(false));
                 self.send(Command::FollowRange(None));
             }
             if ui.toggle_value(&mut self.scan, "Scan").on_hover_text("Listen to the newest call").changed() {
@@ -1671,6 +1682,7 @@ impl App {
                 self.follow_range = Some(range);
                 self.band.follow_range = Some(range);
                 self.send(Command::FollowRange(Some(range)));
+                self.send(Command::Follow(true));
             }
             band::Action::Add {
                 offset_hz,
@@ -1706,7 +1718,7 @@ impl App {
             } else {
                 ui.label(
                     RichText::new(if self.follow_pick {
-                        "Follow voice: drag across the band to say where to look for new carriers (no drag: everywhere)"
+                        "Follow voice: drag across the band where it should look for new carriers. Nothing is started until you do."
                     } else {
                         "click a carrier to select it · drag across one to add a decoder (it finds the mode itself)"
                     })
