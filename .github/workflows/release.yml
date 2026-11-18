@@ -79,7 +79,7 @@ jobs:
             echo
             echo "| File | What |"
             echo "|---|---|"
-            echo "| \`decaero-gui.exe\` | Inmarsat Classic Aero receiver: P channels (600, 1200, 10500 bit/s) with ACARS, C channel voice (8400 bit/s) with call recording, voice follow. Input from a recording, an SDR++ server, plain TCP/UDP I/Q, or a HackRF, Airspy / HydraSDR, ADALM-PLUTO, SDRplay, Fobos, RTL-SDR or USRP |"
+            echo "| \`decaero-gui.exe\` | Inmarsat Classic Aero receiver: P channels (600, 1200, 10500 bit/s) with ACARS, C channel voice (8400 and 21000 bit/s) with call recording, voice follow. Input from a recording, an SDR++ server, plain TCP/UDP I/Q, or a HackRF, Airspy / HydraSDR, ADALM-PLUTO, SDRplay, Fobos, RTL-SDR or USRP |"
             echo
             echo "Receive only. Windows SmartScreen may warn on first start because the file is unsigned (\"More info\", then \"Run anyway\")."
             echo
