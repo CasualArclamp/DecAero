@@ -355,7 +355,34 @@ protection the paper says is spent on the reflection coefficients alone. So
 the first 56 bits are the predictor with its error-correcting code, some 40
 bits of coefficients, and the 136 after them are the long-term predictor
 and the five excitation blocks (26 bits or so a block), unprotected. Which
-code it is, and every quantiser, is still to find. Its
+code it is, and every quantiser, is still to find.
+
+A closer look at those first 56 bits (same frames; "steady" is how often a
+bit keeps its value from one frame to the next, 50 % for a bit that carries
+noise-like detail and near 100 % for the top bit of a slowly moving value):
+
+* Bits 0 to 39 look like ten fields, least significant bit first, each
+  rising from about 50 % steady to a top bit of 80 to 98 %: bits 0-1, 2-7,
+  8-11, 12-17, 18-22, 23-25, 26-29, 30-35, 36-38 and 39. Ten fields and 40
+  bits fit a 10th order predictor, though widths of 2, 6, 4, 6, 5, 3, 4, 6,
+  3 and 1 are not what one would lay out, so some boundaries are likely
+  wrong.
+* Bits 40 and 41 are the two five-bit relations: 40 is the sum of bits 6,
+  14, 17 and 35, and 41 the inverse of the sum of 7, 15, 20 and 37. That
+  reads as the paper's burst detection: two checks over the bits that
+  matter most.
+* Bits 42 to 47 and 50 to 55 are the twelve check bits of the correcting
+  code over the first 42.
+* Bit 48 is free; bit 49 is nearly always 0.
+
+The 136 bits after them were not untangled. Their statistics repeat every
+22 bits from bit 94 (blocks at 94, 116, 138 and 160, and one at 56), which
+suits five excitation blocks of 22 bits, leaving bits 78 to 93 and 182 to
+191 for the long-term predictor and whatever else; but the pattern inside
+the blocks is not the same in all five, and a search for ordered pulse
+positions found nothing. No sound has been made from the frames. Judging a
+guess needs ears: the way on is to make trial recordings from guessed
+quantisers for Rory to listen to. Its
 frames are saved as they come, 24 octets each and 50 a second, in a `21k`
 folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
 
