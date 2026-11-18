@@ -342,7 +342,20 @@ bursts (a bad frame is replaced by the one before, a run of them muted). It
 does not give the order of the bits or any quantiser table, and without
 those the frames cannot be turned into sound. The frames agree with the
 outline as far as it goes: about the first 40 bits change slowly from frame
-to frame (the predictor), and short slow fields recur through the rest. Its
+to frame (the predictor), and short slow fields recur through the rest.
+
+Found in the frames themselves (2026-11-18, 379 different voice frames from
+half-second frames with no channel errors): over GF(2) there are exactly 14
+parity relations between a frame's bits, and every one lies within the first
+56 bits. Twelve of them each end in one of bits 42 to 47 and 50 to 55, with
+14 to 19 bits in them; the other two have five bits each, all below bit 42
+(6, 14, 17, 35, 40, and 7, 15, 20, 37, 41 with the sense turned over); bits
+48 and 49 are in none. Fourteen check bits a frame is 0.7 kbit/s, the
+protection the paper says is spent on the reflection coefficients alone. So
+the first 56 bits are the predictor with its error-correcting code, some 40
+bits of coefficients, and the 136 after them are the long-term predictor
+and the five excitation blocks (26 bits or so a block), unprotected. Which
+code it is, and every quantiser, is still to find. Its
 frames are saved as they come, 24 octets each and 50 a second, in a `21k`
 folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
 
