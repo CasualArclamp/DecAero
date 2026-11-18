@@ -484,11 +484,15 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         let (tx, rx) = mpsc::sync_channel(64);
         let status = Arc::new(Mutex::new(ChannelStatus::new(id, offset_hz, seconds)));
         let stop = Arc::new(AtomicBool::new(false));
+        // A voice channel a P channel has just assigned: the carrier comes
+        // up some seconds later, and a call may be short.
+        let eager = known_rate.is_none() && rates == [8400];
         let req = Request {
             id,
             in_rate: rate,
             offset_hz,
             rates,
+            eager,
             search_hz: (width_hz * 0.75).max(700.0),
             started_s: seconds,
             known_rate,

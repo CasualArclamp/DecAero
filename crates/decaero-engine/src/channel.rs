@@ -223,6 +223,9 @@ pub struct Request {
     /// The user put this decoder here: it stays however quiet the channel is
     /// (a burst channel can be silent for minutes).
     pub persistent: bool,
+    /// A carrier is expected here any moment (an assigned voice channel):
+    /// look every second at the newest two seconds, for half a minute.
+    pub eager: bool,
 }
 
 /// Es/N0 (as a ratio) that gives raw bit error rate `p` on an antipodal signal.
@@ -426,7 +429,13 @@ pub fn run(
             kept.push(block.clone());
             let have = coarse_out.len() as f64 / coarse.out_rate();
             // Try at 3 s; a weak carrier gets a second look at 10 s.
-            let due = if tries == 0 { 3.0 } else { 10.0 };
+            let due = if req.eager {
+                2.0
+            } else if tries == 0 {
+                3.0
+            } else {
+                10.0
+            };
             if have < due {
                 continue;
             }
@@ -440,9 +449,26 @@ pub fn run(
                         .is_none_or(|second| f.strength > 1.6 * second.strength)
             });
             let Some(best) = best else {
-                if tries >= 2 {
+                if tries >= if req.eager { 30 } else { 2 } {
                     status.lock().unwrap().kind = Kind::NotAero;
                     break;
+                }
+                if req.eager {
+                    // Keep the newest second: the next look is at that and
+                    // the second to come, so a carrier that has just come
+                    // up is not drowned by the noise from before it.
+                    let keep = coarse.out_rate() as usize;
+                    let cut = coarse_out.len().saturating_sub(keep);
+                    coarse_out.drain(..cut);
+                    let mut held = 0.0;
+                    let from = kept
+                        .iter()
+                        .rposition(|b| {
+                            held += b.len() as f64 / req.in_rate;
+                            held >= 1.0
+                        })
+                        .unwrap_or(0);
+                    kept.drain(..from);
                 }
                 continue;
             };
