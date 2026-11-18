@@ -66,6 +66,12 @@ pub struct Band {
     counted: (f32, f32),
     palette: Vec<Color32>,
     dirty: bool,
+    /// The noise floor and the highest peak of what is on screen, dB,
+    /// followed with some inertia (as DecSAT's waterfall does), and the
+    /// colour range the waterfall is drawn with: it follows them in steps,
+    /// since a change of range means every row is coloured again.
+    auto: Option<(f32, f32)>,
+    levels: (f32, f32),
     /// The view, in Hz from the centre of the input.
     lo: f64,
     hi: f64,
@@ -103,6 +109,24 @@ enum Column {
 /// fractions `from` and `to` of its length.
 fn plan(n: usize, cols: usize, from: f64, to: f64) -> Vec<Column> {
     (0..cols).map(|c| column(n, cols, from, to, c)).collect()
+}
+
+/// The noise floor (the level a fifth of the points lie under) and the
+/// highest point of a spectrum trace, dB.
+fn floor_and_peak(trace: &[f32]) -> (f32, f32) {
+    let mut sorted = trace.to_vec();
+    sorted.sort_unstable_by(f32::total_cmp);
+    match sorted.as_slice() {
+        [] => (0.0, 0.0),
+        [.., last] => (sorted[(sorted.len() - 1) / 5], *last),
+    }
+}
+
+/// The waterfall's colour range for that floor and peak: the noise stays
+/// dark and the strongest carrier on screen just reaches the top colour.
+/// (A row is one draw of the noise, which runs some 5 dB over its average.)
+fn waterfall_range(floor: f32, peak: f32) -> (f32, f32) {
+    (floor - 4.0, (peak + 3.0).max(floor + 21.0))
 }
 
 /// Column `c` of `plan`.
@@ -175,6 +199,8 @@ impl Band {
             texture: None,
             palette: palette(),
             dirty: true,
+            auto: None,
+            levels: (-3.0, 22.0),
             lo: -0.5,
             hi: 0.5,
             span: 1.0,
@@ -189,6 +215,7 @@ impl Band {
 
     pub fn clear(&mut self) {
         self.rows.clear();
+        self.auto = None;
         self.span = 1.0;
         self.dirty = true;
     }
@@ -222,8 +249,7 @@ impl Band {
         // The same for the finer rows, which change shape as the zoom does.
         let mut fine: Vec<Option<Column>> = Vec::new();
         let mut fine_for = (0.0, 0.0, 0);
-        for (r, (line, (floor, both, at))) in
-            pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate()
+        for (r, (line, (_, both, at))) in pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate()
         {
             // A row from before a retune sits `shift` Hz along from where it
             // was taken: the view is moved the other way to read it.
@@ -277,8 +303,7 @@ impl Band {
             } else {
                 row
             };
-            // From a little under the floor to 22 dB over it.
-            let (lo, scale) = (floor - 3.0, 255.0 / 25.0);
+            let (lo, scale) = (self.levels.0, 255.0 / (self.levels.1 - self.levels.0));
             for (c, (px, column)) in line.iter_mut().zip(&planned).enumerate() {
                 // A moved row does not reach all the way across: the rest
                 // stays dark.
@@ -451,6 +476,32 @@ impl Band {
             self.thick = thick;
             self.dirty = true;
         }
+        // The averaged spectrum over the middle of every screen pixel (the
+        // finer average where there is one), for the trace and for the
+        // scales: floor and peak are those of what is on screen, so a zoom
+        // on a quiet stretch or a strong carrier each get a range that fits.
+        let mut trace = Vec::new();
+        if !view.spectrum_db.is_empty() {
+            trace = columns(&view.spectrum_db, cols, from, to);
+            if let Some(z) = &view.zoom {
+                for (level, f) in trace.iter_mut().zip(overlay(z, cols, lo, hi)) {
+                    if let Some(f) = f {
+                        *level = read(&z.db, f);
+                    }
+                }
+            }
+            let (floor, peak) = floor_and_peak(&trace);
+            let (f, p) = match self.auto {
+                Some((f, p)) => (f + 0.1 * (floor - f), p + 0.1 * (peak - p)),
+                None => (floor, peak),
+            };
+            self.auto = Some((f, p));
+            let want = waterfall_range(f, p);
+            if (want.0 - self.levels.0).abs() > 1.0 || (want.1 - self.levels.1).abs() > 1.0 {
+                self.levels = want;
+                self.dirty = true;
+            }
+        }
         self.upload(ui.ctx());
         // The picture starts above the top edge by the rows still to come,
         // in whole screen pixels, so it glides down instead of jumping a
@@ -471,39 +522,33 @@ impl Band {
             );
         }
 
-        // Spectrum trace: floor - 5 dB at the bottom, 30 dB of range.
+        // Spectrum trace: from a little under the floor to a little over the
+        // highest peak on screen, and never less than 30 dB of range.
         let font = FontId::proportional(10.0);
-        if !view.spectrum_db.is_empty() {
-            let (bottom, top) = (view.floor_db - 5.0, view.floor_db + 25.0);
+        if let Some((floor, peak)) = self.auto.filter(|_| !trace.is_empty()) {
+            let (bottom, top) = (floor - 6.0, (peak + 4.0).max(floor + 24.0));
             let y_of = |db: f32| {
                 spec.bottom() - ((db - bottom) / (top - bottom)).clamp(0.0, 1.0) * spec.height()
             };
-            for step in [0.0f32, 10.0, 20.0] {
-                let y = mid(y_of(view.floor_db + step), ppp);
+            // A line every 10 dB (every 20 when the range is wide).
+            let every = if top - bottom > 60.0 { 20.0 } else { 10.0 };
+            let mut level = (bottom / every).ceil() * every;
+            while level < top {
+                let y = mid(y_of(level), ppp);
                 painter.line_segment(
                     [pos2(spec.left(), y), pos2(spec.right(), y)],
                     Stroke::new(1.0, GRID),
                 );
-                let label = format!("{:.0} dB", view.floor_db + step);
                 painter.text(
                     pos2(spec.left() + 4.0, y - 1.0),
                     Align2::LEFT_BOTTOM,
-                    label,
+                    format!("{level:.0} dB"),
                     font.clone(),
                     FAINT,
                 );
+                level += every;
             }
-            // A point over the middle of every screen pixel, so the trace
-            // stands exactly on the waterfall's columns.
-            let mut levels = columns(&view.spectrum_db, cols, from, to);
-            // Zoomed in: the finer average where it reaches.
-            if let Some(z) = &view.zoom {
-                for (level, f) in levels.iter_mut().zip(overlay(z, cols, lo, hi)) {
-                    if let Some(f) = f {
-                        *level = read(&z.db, f);
-                    }
-                }
-            }
+            let levels = trace;
             let points: Vec<egui::Pos2> = levels
                 .into_iter()
                 .enumerate()
@@ -856,6 +901,25 @@ mod tests {
         // The old row ends 5 kHz short of the top of the band now.
         assert!(pixels[64 + 59..].iter().all(|p| *p == DARK));
         assert!(pixels[64 + 58] != DARK);
+    }
+
+    #[test]
+    fn the_scale_fits_what_is_shown() {
+        // Noise at -100 dB with a carrier 35 dB over it.
+        let mut trace = vec![-100.0f32; 200];
+        for (i, v) in trace.iter_mut().enumerate() {
+            *v += (i % 5) as f32 * 0.2;
+        }
+        trace[80..90].fill(-65.0);
+        let (floor, peak) = floor_and_peak(&trace);
+        assert!((floor + 100.0).abs() < 0.5, "{floor}");
+        assert_eq!(peak, -65.0);
+        // The carrier is not clipped and the noise sits low in the colours.
+        let (lo, hi) = waterfall_range(floor, peak);
+        assert!(hi >= -65.0 && (floor - lo) / (hi - lo) < 0.15);
+        // Nothing but noise: still a fair range, not the noise blown up.
+        let (lo, hi) = waterfall_range(-100.0, -98.0);
+        assert!(hi - lo >= 25.0);
     }
 
     #[test]

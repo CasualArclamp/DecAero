@@ -138,6 +138,8 @@ struct App {
     /// An SDR++ server's controls for its radio, as last sent (and as
     /// changed here since), with the number of the copy.
     menu: Vec<Widget>,
+    /// The input is a network one, connected.
+    net_on: bool,
     menu_seq: u64,
     /// A radio was asked for on the command line: show its gains at once.
     radio_arg: bool,
@@ -213,6 +215,9 @@ impl App {
             self.send(Command::Scan(false));
         }
         self.live = live;
+        // A live input that is not one of this machine's radios came in
+        // over the network.
+        self.net_on = live && self.radio_control.is_none();
         self.paused = false;
         self.band.clear();
         self.shown_sent = None;
@@ -260,6 +265,16 @@ impl App {
         });
         self.connecting = Some(rx);
         self.error = None;
+    }
+
+    /// Let go of the network input: the engine stops and the connection is
+    /// closed. What is on screen stays.
+    fn disconnect(&mut self) {
+        self.engine = None;
+        self.net_on = false;
+        self.live = false;
+        self.menu.clear();
+        self.view.source = "disconnected".into();
     }
 
     /// Open the picked radio. This takes the device, so it happens only on
@@ -679,6 +694,11 @@ impl App {
             }
             if self.connecting.is_some() {
                 ui.label(RichText::new("connecting…").color(WARN));
+            } else if self.net_on {
+                // Connected: the same button lets go of the server.
+                if ui.button("Disconnect").on_hover_text("Stop and close the connection").clicked() {
+                    self.disconnect();
+                }
             } else if ui.button("Connect").clicked() {
                 self.connect();
             }
@@ -2039,6 +2059,7 @@ fn main() -> eframe::Result {
                 radio_bias: bias_arg,
                 radio_control: None,
                 menu: Vec::new(),
+                net_on: false,
                 menu_seq: 0,
                 radio_arg: radio_key.is_some(),
                 live: false,

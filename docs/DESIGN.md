@@ -287,6 +287,15 @@ radio its rate and gains (`rate.KEY`, `gain.KEY.STAGE`) and the bias-T choice.
 - Unattended: `--view LO_HZ:HI_HZ` sets the view, and a `--screenshot` run
   prints the mean and longest frame times.
 
+### Scales
+
+The spectrum trace and the waterfall's colours fit what is on screen, as
+DecSAT's do: the floor is the level a fifth of the trace lies under, the top
+the highest peak, both followed with some inertia. The trace runs from 6 dB
+under the floor to 4 dB over the peak (at least 30 dB), the colours from 4 dB
+under the floor to 3 dB over the peak (at least 25 dB). The colours follow in
+steps of more than 1 dB, because a new range means colouring every row again.
+
 ### Tuning
 
 The centre frequency is DecSAT's big digits (`freq_display.rs`). On a live
