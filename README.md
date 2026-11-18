@@ -27,7 +27,8 @@ written in Rust. Receive only.
 
 **Voice**
 - Voice follow: when a ground station assigns a voice channel, a decoder is
-  started there and you hear the call.
+  started there and you hear the call. After turning it on, drag across
+  the band to keep it to that part. A call's decoder goes when the call ends.
 - Every call is saved as a small Ogg Opus file (about 5 MB an hour), named by
   date, time, frequency and aircraft, with a line in `calls.csv`.
 - Call progress is read: who rang whom, the call's priority (distress,

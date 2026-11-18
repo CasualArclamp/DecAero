@@ -92,6 +92,9 @@ pub struct Band {
     /// Hz to move the tuning by, from a middle-button drag: for the caller
     /// to take and act on.
     pub tune_by: f64,
+    /// The part of the band voice follow is kept to, Hz from the centre:
+    /// marked on the spectrum.
+    pub follow_range: Option<(f64, f64)>,
 }
 
 /// How one column of the picture is read from a row of bins.
@@ -210,6 +213,7 @@ impl Band {
             tuned: 0.0,
             drawn_tuned: 0.0,
             tune_by: 0.0,
+            follow_range: None,
         }
     }
 
@@ -463,6 +467,19 @@ impl Band {
         painter.rect_filled(spec, 0, WELL);
         painter.rect_filled(axis, 0, AXIS);
         painter.rect_filled(wf, 0, DARK);
+        // Where voice follow looks: a lighter stretch between two lines.
+        if let Some((a, b)) = self.follow_range {
+            let (xa, xb) = (snap(x_of(a), ppp), snap(x_of(b), ppp));
+            let marked = egui::Rect::from_min_max(pos2(xa, spec.top()), pos2(xb, spec.bottom()));
+            painter.rect_filled(marked, 0, Color32::from_rgba_unmultiplied(90, 220, 140, 14));
+            for x in [xa, xb] {
+                let x = mid(x, ppp);
+                painter.line_segment(
+                    [pos2(x, spec.top()), pos2(x, spec.bottom())],
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 220, 140, 150)),
+                );
+            }
+        }
 
         // One column of the picture to a screen pixel, and each row a whole
         // number of them, drawn unfiltered: nothing is stretched or blurred.

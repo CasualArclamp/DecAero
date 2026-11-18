@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--follow-range LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
 mod activity;
 mod aircraft;
@@ -143,6 +143,12 @@ struct App {
     menu: Vec<Widget>,
     /// The input is a network one, connected.
     net_on: bool,
+    /// Follow voice was just turned on: the next drag on the band is the
+    /// range it looks in. And that range, Hz from the centre.
+    follow_pick: bool,
+    follow_range: Option<(f64, f64)>,
+    /// `--follow-range`: the range for the first input.
+    follow_range_arg: Option<(f64, f64)>,
     menu_seq: u64,
     /// A radio was asked for on the command line: show its gains at once.
     radio_arg: bool,
@@ -171,6 +177,17 @@ impl App {
     /// live input to it).
     fn set_centre(&mut self, hz: f64) {
         let hz = hz.clamp(0.0, 99_999_999_999.0);
+        // A live input really moves: the follow range stays on the same
+        // frequencies.
+        let moved = hz - self.center_hz();
+        if self.live
+            && let Some((lo, hi)) = self.follow_range
+        {
+            let range = (lo - moved, hi - moved);
+            self.follow_range = Some(range);
+            self.band.follow_range = Some(range);
+            self.send(Command::FollowRange(Some(range)));
+        }
         let text = format!("{:.6}", hz / 1e6);
         self.center_text = text.trim_end_matches('0').trim_end_matches('.').to_string();
         self.send(Command::SetCenter(hz));
@@ -231,6 +248,13 @@ impl App {
             }
             _ => activity::Activity::new(),
         };
+        // A range picked for follow goes with the input it was picked on.
+        self.follow_pick = false;
+        self.follow_range = self.follow_range_arg.take();
+        self.band.follow_range = self.follow_range;
+        if self.follow_range.is_some() {
+            self.send(Command::FollowRange(self.follow_range));
+        }
         // The engine starts with scan on.
         if !self.scan {
             self.send(Command::Scan(false));
@@ -788,8 +812,14 @@ impl App {
                 "Centre frequency. Scroll or click a digit to step it, right-click to zero it and those after it. On the band, drag with the middle button to tune.",
             );
             ui.separator();
-            if ui.toggle_value(&mut self.follow, "Follow voice").on_hover_text("Start a decoder on every new carrier and every voice channel a P channel assigns").changed() {
+            if ui.toggle_value(&mut self.follow, "Follow voice").on_hover_text("Start a decoder on every new carrier and every voice channel a P channel assigns. After turning it on, drag across the band to keep it to that part; without a drag it looks everywhere.").changed() {
                 self.send(Command::Follow(self.follow));
+                // Turned on: the next drag on the band says where to look.
+                // Either way the old range is dropped.
+                self.follow_pick = self.follow;
+                self.follow_range = None;
+                self.band.follow_range = None;
+                self.send(Command::FollowRange(None));
             }
             if ui.toggle_value(&mut self.scan, "Scan").on_hover_text("Listen to the newest call").changed() {
                 self.send(Command::Scan(self.scan));
@@ -1634,6 +1664,17 @@ impl App {
             band::Action::Add {
                 offset_hz,
                 width_hz,
+            } if self.follow_pick => {
+                // The drag after Follow voice was pressed: where to look.
+                self.follow_pick = false;
+                let range = (offset_hz - width_hz / 2.0, offset_hz + width_hz / 2.0);
+                self.follow_range = Some(range);
+                self.band.follow_range = Some(range);
+                self.send(Command::FollowRange(Some(range)));
+            }
+            band::Action::Add {
+                offset_hz,
+                width_hz,
             } => self.send(Command::Add {
                 offset_hz,
                 width_hz,
@@ -1664,7 +1705,11 @@ impl App {
                 );
             } else {
                 ui.label(
-                    RichText::new("click a carrier to select it · drag across one to add a decoder (it finds the mode itself)")
+                    RichText::new(if self.follow_pick {
+                        "Follow voice: drag across the band to say where to look for new carriers (no drag: everywhere)"
+                    } else {
+                        "click a carrier to select it · drag across one to add a decoder (it finds the mode itself)"
+                    })
                         .color(DIM)
                         .size(11.0),
                 );
@@ -2022,6 +2067,7 @@ fn main() -> eframe::Result {
     let mut after = 8.0;
     let mut step = None;
     let mut record_iq = None;
+    let mut follow_range = None;
     let mut select_hz = None;
     let mut view_arg: Option<(f64, f64)> = None;
     let mut out_dir = None;
@@ -2047,6 +2093,12 @@ fn main() -> eframe::Result {
                 step = args.next().and_then(|v| {
                     let (at, by) = v.split_once(':')?;
                     Some((at.parse().ok()?, by.parse().ok()?))
+                })
+            }
+            "--follow-range" => {
+                follow_range = args.next().and_then(|v| {
+                    let (lo, hi) = v.split_once(':')?;
+                    Some((lo.parse().ok()?, hi.parse().ok()?))
                 })
             }
             "--record-iq" => record_iq = args.next().map(PathBuf::from),
@@ -2169,6 +2221,9 @@ fn main() -> eframe::Result {
                 radio_control: None,
                 menu: Vec::new(),
                 net_on: false,
+                follow_pick: false,
+                follow_range: None,
+                follow_range_arg: follow_range,
                 menu_seq: 0,
                 radio_arg: radio_key.is_some(),
                 live: false,

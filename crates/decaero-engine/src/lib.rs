@@ -238,6 +238,9 @@ pub enum Command {
     Listen(Option<ChannelId>),
     Scan(bool),
     Follow(bool),
+    /// Follow only inside this part of the band (Hz from the centre), or
+    /// everywhere again.
+    FollowRange(Option<(f64, f64)>),
     Pause(bool),
     SetCenter(f64),
     /// Start recording this part of the band (Hz from the centre) as I/Q to
@@ -524,6 +527,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     };
 
     let mut menu_seen = 0;
+    // Where follow may start decoders (Hz from the centre); everywhere if none.
+    let mut follow_range: Option<(f64, f64)> = None;
     let mut iq: Option<iqrec::IqRecorder> = None;
     while !shared.stop.load(Ordering::Relaxed) {
         // Commands from the GUI.
@@ -576,6 +581,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 Command::Feeds(o) => feeds.configure(o),
                 Command::Scan(on) => scan = on,
                 Command::Follow(on) => options.follow = on,
+                Command::FollowRange(range) => follow_range = range,
                 Command::Pause(on) => paused = on,
                 Command::Show {
                     lo_hz,
@@ -816,7 +822,12 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     let steps = (offset - s.carrier_hz) / step;
                     same_rate && steps.round() != 0.0 && (steps - steps.round()).abs() * step < 8.0
                 });
-                if ghost || echo || deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r) {
+                let outside = follow_range.is_some_and(|(lo, hi)| offset < lo || offset > hi);
+                if ghost
+                    || echo
+                    || outside
+                    || deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r)
+                {
                     continue;
                 }
                 // A decoder still searching here gives way: the scan knows
@@ -859,7 +870,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 let busy = workers
                     .iter()
                     .any(|w| !w.closed && (w.offset_hz - offset).abs() < 4000.0);
-                if offset.abs() < rate / 2.0 - 5000.0 && !busy {
+                let inside = follow_range.is_none_or(|(lo, hi)| (lo..=hi).contains(&offset));
+                if offset.abs() < rate / 2.0 - 5000.0 && !busy && inside {
                     // A new call there is news: the deletion no longer holds.
                     deleted.retain(|(hz, reach)| (hz - offset).abs() > *reach);
                     spawn(
@@ -887,6 +899,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                         !w.closed && near(w.offset_hz, (w.width_hz + c.width_hz) / 2.0 + 300.0)
                     });
                     if busy
+                        || follow_range.is_some_and(|(lo, hi)| c.center_hz < lo || c.center_hz > hi)
                         || rejected.iter().any(|(hz, _)| near(*hz, 1000.0))
                         || deleted.iter().any(|(hz, r)| near(*hz, *r))
                         || workers.iter().filter(|w| !w.closed).count() >= 48
@@ -932,6 +945,11 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 return false;
             }
             let s = w.status.lock().unwrap();
+            // A voice channel whose call is over: gone at once (the call
+            // stays in the calls table).
+            if s.kind == Kind::C {
+                return false;
+            }
             // Nothing there, or nothing that ever decoded: leave the place
             // alone for a minute.
             if s.kind == Kind::NotAero {
