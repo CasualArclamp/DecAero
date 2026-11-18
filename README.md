@@ -49,6 +49,8 @@ written in Rust. Receive only.
   step it, right-click to zero it and those after it. On a live input,
   dragging the band with the middle button tunes the radio, and the
   waterfall's history moves along with it.
+- **● I/Q** records the part of the band on screen as an I/Q WAV, to keep a
+  signal for later.
 - The wheel zooms about the cursor and right-drag pans. As you zoom in the
   FFT gets finer, down to 1 Hz bins, and what is already on screen stays.
 

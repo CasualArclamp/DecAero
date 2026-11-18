@@ -296,6 +296,27 @@ under the floor to 4 dB over the peak (at least 30 dB), the colours from 4 dB
 under the floor to 3 dB over the peak (at least 25 dB). The colours follow in
 steps of more than 1 dB, because a new range means colouring every row again.
 
+### I/Q recording
+
+The **● I/Q** button records the part of the band on screen: mixed to zero,
+decimated to at least four times the width shown (the CIC decimator is flat
+over its middle quarter), 16-bit stereo WAV in `Documents\DecAero\iq`, named
+by time, frequency and width. The level of the first block is put 12 dB under
+full scale and that scale is kept. A retune, the end of the input or a
+disconnect ends it (`decaero-engine/src/iqrec.rs`).
+
+### The 21000 bit/s voice channel (9.6 kbit/s codec): open
+
+Asked for by Rory, 2026-11-18. Not decoded, and nothing to build on yet:
+JAERO has no frame layout for the channel and no decoder for the codec (the
+9.6 kbit/s Skyphone codec, multipulse-excited LPC by the sound of ARINC 741),
+and no public description of its bits was found. Rory's recording
+`areo phone assignmeant.wav` (5 MS/s, 8 bit, using two of its bits) shows the
+carrier at +2.3196 MHz only 1 dB over the noise, with no symbol-rate line in
+its square: nothing to demodulate. Wanted: a strong capture of one (the I/Q
+button), then the demodulator and frame are worked out from it; the codec
+needs its definition or a lot of luck.
+
 ### Tuning
 
 The centre frequency is DecSAT's big digits (`freq_display.rs`). On a live

@@ -7,7 +7,7 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ]] [--select HZ] [--view LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
 mod activity;
 mod aircraft;
@@ -81,6 +81,9 @@ struct Shot {
     /// For trying a retune unattended: after this many seconds, move the
     /// centre by this many hertz.
     step: Option<(f64, f64)>,
+    /// For trying the I/Q recorder unattended: record what is on screen
+    /// to this file, from three seconds in.
+    record_iq: Option<PathBuf>,
     /// Frames drawn and the time they took, for a line on how evenly the
     /// window was drawn: (frames, seconds, longest frame, frames over 25 ms).
     frames: (u32, f32, f32, u32),
@@ -171,6 +174,24 @@ impl App {
         let text = format!("{:.6}", hz / 1e6);
         self.center_text = text.trim_end_matches('0').trim_end_matches('.').to_string();
         self.send(Command::SetCenter(hz));
+    }
+
+    /// A name for an I/Q recording of `lo..hi` (Hz from the centre): the
+    /// time, where its middle is, and how wide it is.
+    fn iq_path(&self, lo: f64, hi: f64) -> PathBuf {
+        let (y, mo, d, h, mi, s) = recorder::civil(recorder::unix_now() as i64);
+        let middle = (lo + hi) / 2.0;
+        let place = if self.center_hz() > 0.0 {
+            format!("{:.4}MHz", (self.center_hz() + middle) / 1e6)
+        } else {
+            format!("{:+.1}kHz", middle / 1e3)
+        };
+        recorder::Recorder::default_dir()
+            .with_file_name("iq")
+            .join(format!(
+                "{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}Z_{place}_{:.0}kHz-wide.wav",
+                (hi - lo) / 1e3
+            ))
     }
 
     fn center_hz(&self) -> f64 {
@@ -614,6 +635,13 @@ impl App {
             shot.step = None;
             self.set_centre(self.center_hz() + by);
         }
+        if let Some(shot) = &mut self.shot
+            && self.started.elapsed().as_secs_f64() >= 3.0
+            && let Some((lo, hi, _)) = self.band.shown
+            && let Some(path) = shot.record_iq.take()
+        {
+            self.send(Command::RecordIq(Some((path, lo, hi))));
+        }
         let Some(shot) = &mut self.shot else { return };
         // The first seconds (start-up, textures being made) are left out.
         let dt = ctx.input(|i| i.unstable_dt);
@@ -673,6 +701,17 @@ impl App {
             if ui.add(button).clicked() && self.engine.is_some() {
                 self.paused = !self.paused;
                 self.send(Command::Pause(self.paused));
+            }
+            // Record the part of the band on screen as I/Q, to work on later.
+            let recording = self.view.iq_recording.is_some();
+            let label = if recording { "■ I/Q" } else { "● I/Q" };
+            let hint = "Record the part of the band on screen as I/Q (a 16-bit WAV in Documents/DecAero/iq). Zoom in on what you want first.";
+            if self.engine.is_some() && ui.selectable_label(recording, label).on_hover_text(hint).clicked() {
+                if recording {
+                    self.send(Command::RecordIq(None));
+                } else if let Some((lo, hi, _)) = self.band.shown {
+                    self.send(Command::RecordIq(Some((self.iq_path(lo, hi), lo, hi))));
+                }
             }
             if ui.button("Open…").clicked()
                 && let Some(path) = rfd::FileDialog::new().add_filter("recordings", &["wav"]).pick_file()
@@ -983,6 +1022,12 @@ impl App {
                     decaero_engine::vector_level(),
                     format_args!("{} blocks lost", v.dropped_blocks)
                 ),
+                match &v.iq_recording {
+                    Some((path, seconds)) => {
+                        format!("I/Q {} · {}", clock(*seconds), path.display())
+                    }
+                    None => v.iq_note.clone(),
+                },
                 match &self.recorder {
                     Some(r) if r.open_calls() > 0 => format!(
                         "recording {} call(s) to {}",
@@ -1976,6 +2021,7 @@ fn main() -> eframe::Result {
     let mut shot_path = None;
     let mut after = 8.0;
     let mut step = None;
+    let mut record_iq = None;
     let mut select_hz = None;
     let mut view_arg: Option<(f64, f64)> = None;
     let mut out_dir = None;
@@ -2003,6 +2049,7 @@ fn main() -> eframe::Result {
                     Some((at.parse().ok()?, by.parse().ok()?))
                 })
             }
+            "--record-iq" => record_iq = args.next().map(PathBuf::from),
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
             "--view" => {
                 view_arg = args.next().and_then(|v| {
@@ -2098,6 +2145,7 @@ fn main() -> eframe::Result {
                     after,
                     requested: None,
                     step,
+                    record_iq,
                     frames: (0, 0.0, 0.0, 0),
                 }),
                 started: Instant::now(),

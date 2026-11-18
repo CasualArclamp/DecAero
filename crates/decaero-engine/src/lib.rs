@@ -10,6 +10,7 @@
 
 pub mod channel;
 pub mod feed;
+pub mod iqrec;
 pub mod net;
 pub mod scanner;
 pub mod smgui;
@@ -207,6 +208,10 @@ pub struct View {
     /// a change is seen.
     pub menu: Vec<smgui::Widget>,
     pub menu_seq: u64,
+    /// An I/Q recording being made: its file and its length in seconds.
+    /// When it ends, `iq_note` says where it went (or why it failed).
+    pub iq_recording: Option<(std::path::PathBuf, f64)>,
+    pub iq_note: String,
     /// How the feeds out are doing.
     pub feeds: feed::FeedCounts,
     /// The averaged spectrum again, finer, for the part of the band on
@@ -235,6 +240,9 @@ pub enum Command {
     Follow(bool),
     Pause(bool),
     SetCenter(f64),
+    /// Start recording this part of the band (Hz from the centre) as I/Q to
+    /// this file, or stop the recording being made.
+    RecordIq(Option<(std::path::PathBuf, f64, f64)>),
     /// A control of the server's menu was changed.
     Menu {
         id: String,
@@ -250,6 +258,23 @@ pub enum Command {
         hi_hz: f64,
         pixels: usize,
     },
+}
+
+/// End the I/Q recording, if one is being made, and say where it went.
+fn iq_stop(iq: &mut Option<iqrec::IqRecorder>, shared: &Shared) {
+    if let Some(r) = iq.take() {
+        let (rate, seconds) = (r.rate(), r.seconds());
+        let note = match r.finish() {
+            Ok(path) => format!(
+                "I/Q saved: {} ({seconds:.0} s at {rate} S/s)",
+                path.display()
+            ),
+            Err(e) => format!("I/Q recording failed: {e}"),
+        };
+        let mut v = shared.view.lock().unwrap();
+        v.iq_recording = None;
+        v.iq_note = note;
+    }
 }
 
 struct Worker {
@@ -499,6 +524,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     };
 
     let mut menu_seen = 0;
+    let mut iq: Option<iqrec::IqRecorder> = None;
     while !shared.stop.load(Ordering::Relaxed) {
         // Commands from the GUI.
         let mut retune = None;
@@ -557,6 +583,17 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     pixels,
                 } => shown = Some((lo_hz, hi_hz, pixels.max(1))),
                 Command::SetCenter(hz) => retune = Some(hz),
+                Command::RecordIq(Some((path, lo, hi))) => {
+                    iq_stop(&mut iq, &shared);
+                    match iqrec::IqRecorder::new(&path, rate, lo, hi) {
+                        Ok(r) => iq = Some(r),
+                        Err(e) => {
+                            shared.view.lock().unwrap().iq_note =
+                                format!("{}: {e}", path.display());
+                        }
+                    }
+                }
+                Command::RecordIq(None) => iq_stop(&mut iq, &shared),
                 Command::Menu { id, value } => source.menu_action(&id, &value),
             }
         }
@@ -569,6 +606,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             // decoders are stopped (the scan finds what is in the band now)
             // and the averaged spectrum starts again.
             if source.live() && moved.abs() >= 100.0 {
+                // What was being recorded is no longer where it was.
+                iq_stop(&mut iq, &shared);
                 for w in &workers {
                     w.stop.store(true, Ordering::Relaxed);
                     deleted_ids.push(w.id);
@@ -591,6 +630,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         }
         let Some(block) = source.read(block_len) else {
             // End of a file: let the workers finish what they have.
+            iq_stop(&mut iq, &shared);
             for w in &workers {
                 w.stop.store(true, Ordering::Relaxed);
             }
@@ -650,6 +690,19 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         }
         if let Some(z) = &mut zoom {
             z.feed(&block);
+        }
+        if let Some(r) = &mut iq {
+            match r.feed(&block) {
+                Ok(()) => {
+                    shared.view.lock().unwrap().iq_recording =
+                        Some((r.path().to_path_buf(), r.seconds()));
+                }
+                Err(e) => {
+                    let note = format!("{}: {e}", r.path().display());
+                    iq_stop(&mut iq, &shared);
+                    shared.view.lock().unwrap().iq_note = note;
+                }
+            }
         }
         let mut rows_made = 0;
         let segments = (step / n).max(1);
