@@ -1259,61 +1259,122 @@ impl App {
         }
         section(ui, if c.kind == Kind::C { "Call" } else { "Channel" });
         let centre = self.view.center_hz;
-        rows(
-            ui,
-            "call",
-            &[
-                (
-                    "Aircraft",
-                    c.aes.map_or("–".into(), |a| self.who(a)),
-                    Some(GOOD),
+        let mut list: Vec<(&str, String, Option<Color32>)> = vec![
+            (
+                "Aircraft",
+                c.aes.map_or("–".into(), |a| self.who(a)),
+                Some(GOOD),
+            ),
+            (
+                "Type",
+                c.aes
+                    .map_or(String::new(), |a| self.aircraft.get(a).description),
+                None,
+            ),
+            (
+                "Operator",
+                c.aes.map_or(String::new(), |a| self.aircraft.get(a).owner),
+                None,
+            ),
+            (
+                "Ground",
+                c.ges.map_or("–".into(), |g| format!("GES {g:02X}")),
+                None,
+            ),
+            (
+                "Frequency",
+                if centre > 0.0 {
+                    format!("{:.4} MHz", (centre + c.carrier_hz) / 1e6)
+                } else {
+                    "set the centre frequency".into()
+                },
+                None,
+            ),
+            (
+                "Running",
+                format!(
+                    "{} · since {}",
+                    clock(self.view.seconds - c.started_s),
+                    clock(c.started_s)
                 ),
-                (
-                    "Type",
-                    c.aes
-                        .map_or(String::new(), |a| self.aircraft.get(a).description),
-                    None,
-                ),
-                (
-                    "Operator",
-                    c.aes.map_or(String::new(), |a| self.aircraft.get(a).owner),
-                    None,
-                ),
-                (
-                    "Ground",
-                    c.ges.map_or("–".into(), |g| format!("GES {g:02X}")),
-                    None,
-                ),
-                (
-                    "Frequency",
-                    if centre > 0.0 {
-                        format!("{:.4} MHz", (centre + c.carrier_hz) / 1e6)
+                None,
+            ),
+            (
+                "Last unit",
+                if c.last_unit.is_empty() {
+                    "–".into()
+                } else {
+                    c.last_unit.clone()
+                },
+                None,
+            ),
+            ("CPU", format!("{:.1}% of a core", c.cpu * 100.0), None),
+        ];
+        // What the call's progress units have said, the newest of each.
+        let call = self
+            .view
+            .calls
+            .iter()
+            .rev()
+            .find(|call| call.channel == c.id);
+        if let Some(call) = call
+            && let Some(p) = &call.progress
+        {
+            list.push((
+                "Call",
+                format!(
+                    "number {} · {}",
+                    p.call_ref,
+                    if p.from_ground() {
+                        "from the ground"
                     } else {
-                        "set the centre frequency".into()
+                        "from the aircraft"
+                    }
+                ),
+                None,
+            ));
+            list.push((
+                "Priority",
+                match p.priority() {
+                    "" => format!("Q {:X}", p.q_no),
+                    name => name.to_string(),
+                },
+                match p.q_no {
+                    0xF => Some(BAD),
+                    0xE => Some(WARN),
+                    _ => None,
+                },
+            ));
+            list.push((
+                "Progress",
+                match p.report_name() {
+                    "" => format!("report {}", p.report),
+                    name => name.to_string(),
+                },
+                None,
+            ));
+            if let Some(db) = call.eirp_db {
+                list.push((
+                    "Aircraft power",
+                    match db {
+                        0 => "no change asked".to_string(),
+                        db => format!("{db:+} dB asked"),
                     },
                     None,
-                ),
-                (
-                    "Running",
+                ));
+            }
+            if let Some(cause) = call.cause {
+                list.push((
+                    "Cause",
                     format!(
-                        "{} · since {}",
-                        clock(self.view.seconds - c.started_s),
-                        clock(c.started_s)
+                        "class {} value {} · location {}",
+                        cause.class, cause.value, cause.location
                     ),
                     None,
-                ),
-                (
-                    "Last unit",
-                    if c.last_unit.is_empty() {
-                        "–".into()
-                    } else {
-                        c.last_unit.clone()
-                    },
-                    None,
-                ),
-                ("CPU", format!("{:.1}% of a core", c.cpu * 100.0), None),
-            ],
-        );
+                ));
+            }
+        }
+        rows(ui, "call", &list);
     }
 
     fn right(&mut self, ui: &mut Ui) {

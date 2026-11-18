@@ -172,6 +172,10 @@ pub struct Call {
     pub frames: u64,
     /// The last call progress unit seen on the call's channel.
     pub progress: Option<decaero_core::su::CallProgress>,
+    /// The last power change asked of the aircraft (a status report), dB,
+    /// and the last cause given (a result report).
+    pub eirp_db: Option<i8>,
+    pub cause: Option<decaero_core::su::Cause>,
 }
 
 /// A snapshot for the GUI.
@@ -1052,8 +1056,12 @@ fn drain_events(
                 {
                     c.aes = aes.or(c.aes);
                     c.ges = ges.or(c.ges);
-                    if kind == Kind::C {
-                        c.progress = decaero_core::su::call_progress(&bytes).or(c.progress);
+                    if kind == Kind::C
+                        && let Some(p) = decaero_core::su::call_progress(&bytes)
+                    {
+                        c.eirp_db = p.eirp_db.or(c.eirp_db);
+                        c.cause = p.cause.or(c.cause);
+                        c.progress = Some(p);
                     }
                 }
                 line(
@@ -1175,6 +1183,8 @@ ADS-C {}",
                             end_s: None,
                             frames: 1,
                             progress: None,
+                            eirp_db: None,
+                            cause: None,
                         });
                     }
                 }
