@@ -331,8 +331,18 @@ progress shown as for 8400, its call in the calls table. Follow tries both
 voice rates on an assigned channel; a box dragged wider than 12 kHz does too.
 The deep scan does not look for it.
 
-The speech is not decoded: the codec (9.6 kbit/s, the Skyphone one, by the
-sound of ARINC 741 multipulse-excited LPC) is not publicly described. Its
+The speech is not decoded. The codec is British Telecom's Skyphone codec,
+multipulse-excited LPC. Its designers' paper (Boyd, Southcott, Bolingbroke,
+"A speech coder for aeronautical telecommunications", Eurospeech 1989) gives
+the outline: 10th order LPC sent as reflection coefficients, renewed every
+20 ms; a single-tap long-term predictor renewed every 20 ms; excitation in
+4 ms blocks (five a frame) of three pulses each; error correction on the
+reflection coefficient bits only, and some bits kept for spotting error
+bursts (a bad frame is replaced by the one before, a run of them muted). It
+does not give the order of the bits or any quantiser table, and without
+those the frames cannot be turned into sound. The frames agree with the
+outline as far as it goes: about the first 40 bits change slowly from frame
+to frame (the predictor), and short slow fields recur through the rest. Its
 frames are saved as they come, 24 octets each and 50 a second, in a `21k`
 folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
 
