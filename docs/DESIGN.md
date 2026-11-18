@@ -331,60 +331,79 @@ progress shown as for 8400, its call in the calls table. Follow tries both
 voice rates on an assigned channel; a box dragged wider than 12 kHz does too.
 The deep scan does not look for it.
 
-The speech is not decoded. The codec is British Telecom's Skyphone codec,
-multipulse-excited LPC. Its designers' paper (Boyd, Southcott, Bolingbroke,
-"A speech coder for aeronautical telecommunications", Eurospeech 1989) gives
-the outline: 10th order LPC sent as reflection coefficients, renewed every
-20 ms; a single-tap long-term predictor renewed every 20 ms; excitation in
-4 ms blocks (five a frame) of three pulses each; error correction on the
-reflection coefficient bits only, and some bits kept for spotting error
-bursts (a bad frame is replaced by the one before, a run of them muted). It
-does not give the order of the bits or any quantiser table, and without
-those the frames cannot be turned into sound. The frames agree with the
-outline as far as it goes: about the first 40 bits change slowly from frame
-to frame (the predictor), and short slow fields recur through the rest.
+The voice frames are saved as they come, 24 octets each and 50 a second, in a
+`21k` folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
 
-Found in the frames themselves (2026-11-18, 379 different voice frames from
-half-second frames with no channel errors): over GF(2) there are exactly 14
-parity relations between a frame's bits, and every one lies within the first
-56 bits. Twelve of them each end in one of bits 42 to 47 and 50 to 55, with
-14 to 19 bits in them; the other two have five bits each, all below bit 42
-(6, 14, 17, 35, 40, and 7, 15, 20, 37, 41 with the sense turned over); bits
-48 and 49 are in none. Fourteen check bits a frame is 0.7 kbit/s, the
-protection the paper says is spent on the reflection coefficients alone. So
-the first 56 bits are the predictor with its error-correcting code, some 40
-bits of coefficients, and the 136 after them are the long-term predictor
-and the five excitation blocks (26 bits or so a block), unprotected. Which
-code it is, and every quantiser, is still to find.
+### The 9.6 kbit/s speech codec: what is known (2026-11-19)
 
-A closer look at those first 56 bits (same frames; "steady" is how often a
-bit keeps its value from one frame to the next, 50 % for a bit that carries
-noise-like detail and near 100 % for the top bit of a slowly moving value):
+The speech is not decoded to anything one can follow yet. The codec is
+British Telecom's Skyphone codec, multipulse-excited LPC. Its designers'
+paper (Boyd, Southcott, Bolingbroke, "A speech coder for aeronautical
+telecommunications", Eurospeech 1989) gives the outline of the trial codec:
+10th order LPC sent as reflection coefficients every 20 ms, a single-tap
+long-term predictor every 20 ms, three pulses to an excitation block, error
+correction on the predictor bits only, and bits kept for spotting error
+bursts. It gives no bit order and no quantiser table, and nothing else
+public does. What follows was worked out from the one recorded call (116 s
+of frames, 5404 of 5825 passing the checks below). Bits are numbered from 0
+in the order they arrive in the 192-bit frame.
 
-* Bits 0 to 39 look like ten fields, least significant bit first, each
-  rising from about 50 % steady to a top bit of 80 to 98 %: bits 0-1, 2-7,
-  8-11, 12-17, 18-22, 23-25, 26-29, 30-35, 36-38 and 39. Ten fields and 40
-  bits fit a 10th order predictor, though widths of 2, 6, 4, 6, 5, 3, 4, 6,
-  3 and 1 are not what one would lay out, so some boundaries are likely
-  wrong.
-* Bits 40 and 41 are the two five-bit relations: 40 is the sum of bits 6,
-  14, 17 and 35, and 41 the inverse of the sum of 7, 15, 20 and 37. That
-  reads as the paper's burst detection: two checks over the bits that
-  matter most.
-* Bits 42 to 47 and 50 to 55 are the twelve check bits of the correcting
-  code over the first 42.
-* Bit 48 is free; bit 49 is nearly always 0.
+**The call.** Its first half minute is not speech: loud, steady noise (an
+aircraft cabin, by the look of it). Speech-like stretches are 36 to 62 s and
+84 to 104 s; 78 to 83 s is silent, and there every predictor bit is fixed:
+an idle pattern.
 
-The 136 bits after them were not untangled. Their statistics repeat every
-22 bits from bit 94 (blocks at 94, 116, 138 and 160, and one at 56), which
-suits five excitation blocks of 22 bits, leaving bits 78 to 93 and 182 to
-191 for the long-term predictor and whatever else; but the pattern inside
-the blocks is not the same in all five, and a search for ordered pulse
-positions found nothing. No sound has been made from the frames. Judging a
-guess needs ears: the way on is to make trial recordings from guessed
-quantisers for Rory to listen to. Its
-frames are saved as they come, 24 octets each and 50 a second, in a `21k`
-folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
+**Bits 0 to 55: predictor and protection.**
+
+* Twelve parity relations hold over GF(2) (listed in `scripts/c21_render.py`):
+  eleven each end in a check bit (42 to 47, 51 to 55), one ties bits 40 and
+  41 to bits 6, 7, 14, 15, 17, 20, 35 and 37 (the burst detection). The data
+  bits they cover are 0-7, 9-11, 13-17, 20-22, 24-25, 28-29, 35 and 37-38:
+  the upper bits of each field below, which is how the fields' edges are
+  known. Bits 48 to 50 are in no relation.
+* Fields, least significant bit first: 0-1, 2-7, 8-11, 12-17, 18-22, 23-25,
+  26-29, 30-33, 34-35, 36-38, and bit 39.
+* 12-17 is taken to be the long-term predictor's lag and 0-1 its gain: in
+  steady noise 12-17 wanders over a sixth of its range from frame to frame
+  while every other field holds within a tenth, as a pitch lag would, and it
+  moves with 0-1.
+* The rest are taken as reflection coefficients. 2-7 is the first (in the
+  idle pattern it sits at its top code, and rising codes mean a more
+  low-pass sound). The best guess for the others is by width: 18-22 the
+  second, then 8-11, 26-29, 30-33, 23-25, 36-38 and 34-35, eight in all.
+  Whether there are ten, and where the other two would be, is not known.
+
+**Bits 56 to 191: the excitation.** Eighteen pulses, each a 3-bit level and
+a place, most significant bit first, in six groups of three laid out as
+level, 5-bit place, level, 4-bit place, level, 4-bit place (22 bits):
+groups at bits 58, 80, 118, 140 and 162, and one split between 184-191 and
+102-116 (with a 5-bit place where the others have 4). In the silent stretch
+every level reads 1 and the places are random, which is what told levels
+from places. Bits 56, 57 and 117 are unplaced. Not known: how a place maps
+to a sample, the pulses' signs, the scale of the levels, and the order of
+the groups in time. (Eighteen pulses is not the paper's fifteen: the
+standard seems to differ from the trial codec.)
+
+**How guesses were judged.** By a speech recogniser (Whisper, on the
+graphics card), not by ear: a guess is turned into sound and scored by how
+sure the recogniser is that it hears speech. Tried on real speech put
+through the same kind of crude resynthesis, it tells right from wrong when
+the pulses and most of the filter are right, and is no use on hiss-driven
+sound or on small changes. It prefers the assignment above with the first
+four coefficients' codes running against the coefficient (probability of
+"no speech" about 0.25 on the speech stretches, against 0.07 to 0.15 for
+real speech treated alike, and 0.6 and up for wrong guesses), and keeps
+hearing the same shape of sentence in one stretch whatever the details. It
+cannot tell the later coefficients' order or signs, the pitch predictor's
+settings or the pulse details apart: that is as far as it goes.
+
+**Tools.** `scripts/c21_render.py` turns a saved `voice21k_*.bin` into a WAV
+with the present best guess (`scripts/c21_tables.json`: quantiser tables
+made by matching how often each code occurs to how real speech's
+coefficients spread; a guess, not the codec's tables). `c21_trials.py` and
+`c21_match.py` are the earlier attempts (hiss-driven trials; matching the
+fields to real speech by rank correlation, which was not decisive). The
+headless example takes `--raw-voice DIR` to save a recording's voice frames.
 
 ### Tuning
 

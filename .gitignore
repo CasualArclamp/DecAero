@@ -21,3 +21,6 @@
 /docs/images
 # Notes for Claude Code sessions: local only
 CLAUDE.md
+
+# Python work files
+__pycache__/
