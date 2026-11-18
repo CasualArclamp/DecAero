@@ -78,9 +78,10 @@ Settings are kept between runs in `%APPDATA%\DecAero\prefs.txt`.
 
 ## Where it stands
 
-Decoding is checked on off-air recordings and on JAERO's samples. Not yet
-tried on air: the direct radio inputs, a real SDR++ server, C band, and a
-voice call strong enough to listen to. Call tones (ringback) are silent: see
+Decoding is checked on off-air recordings and on JAERO's samples. A real
+SDR++ server works for samples, tuning and its controls. Not yet tried on
+air: the direct radio inputs, C band, and a voice call strong enough to
+listen to. Call tones (ringback) are silent: see
 [docs/DESIGN.md](docs/DESIGN.md), which has the design and what is left.
 
 ## Building
