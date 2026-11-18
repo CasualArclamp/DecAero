@@ -236,6 +236,9 @@ impl App {
                 // Not while the range is still to be dragged.
                 follow: self.follow && !self.follow_pick,
                 follow_range: self.follow_range,
+                // Beside the calls: the frames of 21000 bit/s calls that are
+                // fax or data, whose layout is not known yet.
+                raw_voice_dir: self.recorder.as_ref().map(|r| r.dir().join("21k")),
                 feeds: self.feeds.clone(),
                 ..Options::default()
             },
@@ -1351,6 +1354,17 @@ impl App {
                     ("Audio", format!("peak {:.0}%", c.audio_level * 100.0), None),
                 ],
             );
+            if c.data {
+                rows(
+                    ui,
+                    "voice data",
+                    &[(
+                        "Content",
+                        "not speech: fax or data, frames saved".to_string(),
+                        Some(WARN),
+                    )],
+                );
+            }
         }
         section(ui, if c.kind == Kind::C { "Call" } else { "Channel" });
         let centre = self.view.center_hz;
@@ -1440,6 +1454,9 @@ impl App {
                     _ => None,
                 },
             ));
+            if let Some(a) = call.service {
+                list.push(("Service", a.describe(), a.is_data().then_some(WARN)));
+            }
             list.push((
                 "Progress",
                 match p.report_name() {

@@ -382,8 +382,42 @@ recording's frames (24 octets each, 50 a second).
 In the engine a 21000 bit/s channel's sound goes the way of the 8400
 channel's: to the loudspeaker when listened to, and to the call's recording.
 
-Not done: the "TIF" frames that carry fax and modem data in place of speech
-(ARINC 741), and the squelch from the demodulator into the decoder.
+Not done: the squelch from the demodulator into the decoder.
+
+### Fax and data calls on the voice channel (2026-11-19)
+
+Asked for by Rory. Not decoded, and it cannot be yet: what the voice
+channel's frames hold during a fax or data call is not in ICAO Annex 10
+(which calls the field "transparent data (voice)" and stops there). It is in
+ARINC Characteristic 741 Part 2: "TIF transmission frame structure" tables
+for 300 to 9600 bit/s and a decoder decision figure, seen only as a contents
+list; the document is sold, and no copy was found. A COMSAT patent
+(US 5,802,154) says Aero fax is demodulated on the ground and its bits sent
+with line-state codes, as on Inmarsat-B and -M, so no modem tones are to be
+expected in the frames. And there is no recording of such a call to work
+from. Search notes: `F:/codebases/research_notes/Inmarsat Aero voice codec
+frame/circuit_mode_data.md`.
+
+What is done, so that the first such call caught is not lost:
+
+* The call announcement on the P channel (type 0x20, Annex 10 figure A2-8)
+  is read: service (telephone; data through a modem, which includes fax;
+  data to a digital network) and the modem or speed (V.22, V.22 bis, V.32,
+  V.23, Group 3 fax; 1200 to 9600 bit/s). It is in the log line and, matched
+  by aircraft, in the Call panel ("Service"). Only calls from the ground are
+  announced there: an aircraft's own request goes up on the R channel.
+  (Type 0x21, which JAERO's list calls the announcement, is the call
+  information unit.)
+* On a 21000 bit/s channel, two seconds of clean signal (under 2 % channel
+  errors) with almost no frame passing the speech codec's checks marks the
+  call as data: the Voice panel says so, and its frames, from the call's
+  start (up to a minute held back), go to a `21k` folder beside the calls
+  (`voice21k_UNIXTIME_OFFSET.bin`, 24 octets a frame). Speech calls' frames
+  are not kept. The 8400 bit/s channel has no such check (its codec frames
+  carry no check that data would fail as surely).
+
+Next, with a saved data call or the ARINC tables: the frame layout, then
+fax pages from the T.4 bits.
 
 ### Tuning
 

@@ -61,6 +61,7 @@ fn main() {
             center_hz,
             follow,
             // `--raw-voice DIR`: where 21000 bit/s calls' voice frames go.
+            raw_voice_all: true,
             raw_voice_dir: Some(value("--raw-voice"))
                 .filter(|d| !d.is_empty())
                 .map(std::path::PathBuf::from),

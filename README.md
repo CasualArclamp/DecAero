@@ -23,7 +23,8 @@ written in Rust. Receive only.
 - C channel voice at 8400 bit/s, decoded to sound.
 - The older C channel at 21000 bit/s, with its 9.6 kbit/s speech (British
   Telecom's multipulse LPC, from its definition in ICAO Annex 10), decoded
-  to sound.
+  to sound. Fax and data calls are named from the signalling and their
+  frames saved, but not decoded: their layout is not public.
 - A scan of the whole band finds the carriers and starts a decoder on each;
   you can also drag across a carrier to add one, and it names the mode itself.
 - A decoder that loses its carrier finds it again on its own.

@@ -127,6 +127,9 @@ pub struct Options {
     /// Where the voice frames of 21000 bit/s calls are written as they come
     /// (before the speech decoder), a file a call; nowhere if `None`.
     pub raw_voice_dir: Option<std::path::PathBuf>,
+    /// Write every such call's frames; if not, only those of calls that
+    /// are not speech (fax, data).
+    pub raw_voice_all: bool,
     /// dB over the floor a carrier must reach to be given a decoder.
     pub carrier_db: f32,
     /// Where decoded messages and positions are sent on to.
@@ -142,6 +145,7 @@ impl Default for Options {
             follow: true,
             follow_range: None,
             raw_voice_dir: None,
+            raw_voice_all: false,
             carrier_db: 4.0,
             feeds: feed::FeedOptions::default(),
         }
@@ -184,6 +188,9 @@ pub struct Call {
     /// and the last cause given (a result report).
     pub eirp_db: Option<i8>,
     pub cause: Option<decaero_core::su::Cause>,
+    /// What the P channel announced for this aircraft's call (calls from
+    /// the ground only: an aircraft's own request is not heard here).
+    pub service: Option<decaero_core::su::Announcement>,
 }
 
 /// A snapshot for the GUI.
@@ -313,6 +320,7 @@ fn note_call(calls: &mut Vec<Call>, workers: &[Worker], channel: ChannelId) {
                 progress: None,
                 eirp_db: None,
                 cause: None,
+                service: None,
             });
         }
     }
@@ -322,6 +330,9 @@ fn note_call(calls: &mut Vec<Call>, workers: &[Worker], channel: ChannelId) {
 /// call, 24 octets a frame, 50 frames a second.
 struct RawVoice {
     dir: Option<std::path::PathBuf>,
+    all: bool,
+    /// Calls announced on the P channel lately, with when (s).
+    announced: Vec<(decaero_core::su::Announcement, f64)>,
     files: std::collections::HashMap<ChannelId, std::fs::File>,
 }
 
@@ -603,6 +614,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     let mut menu_seen = 0;
     let mut raw_voice = RawVoice {
         dir: options.raw_voice_dir.clone(),
+        all: options.raw_voice_all,
+        announced: Vec::new(),
         files: std::collections::HashMap::new(),
     };
     // Where follow may start decoders (Hz from the centre); everywhere if none.
@@ -1219,6 +1232,23 @@ fn drain_events(
                         None => hex(&bytes[..10]),
                     },
                 };
+                // A call announced to an aircraft: what its voice channel
+                // will carry, kept until that channel names the aircraft.
+                let announced = decaero_core::su::announcement(&bytes).filter(|_| kind != Kind::C);
+                let (aes, ges, detail) = match announced {
+                    Some(a) => {
+                        raw_voice
+                            .announced
+                            .retain(|(b, when)| b.aes != a.aes && seconds - when < 300.0);
+                        raw_voice.announced.push((a, seconds));
+                        (
+                            Some(a.aes),
+                            Some(a.ges),
+                            format!("{}\n{detail}", a.describe()),
+                        )
+                    }
+                    None => (aes, ges, detail),
+                };
                 if let Some(c) = calls
                     .iter_mut()
                     .rev()
@@ -1226,6 +1256,13 @@ fn drain_events(
                 {
                     c.aes = aes.or(c.aes);
                     c.ges = ges.or(c.ges);
+                    if c.service.is_none() {
+                        c.service = raw_voice
+                            .announced
+                            .iter()
+                            .find(|(a, _)| Some(a.aes) == c.aes)
+                            .map(|(a, _)| *a);
+                    }
                     if kind == Kind::C
                         && let Some(p) = decaero_core::su::call_progress(&bytes)
                     {
@@ -1331,9 +1368,18 @@ ADS-C {}",
                 );
                 assignments.push(assignment);
             }
-            Event::RawVoice { channel, frames } => {
-                note_call(calls, workers, channel);
-                raw_voice.write(channel, workers, &frames);
+            Event::RawVoice {
+                channel,
+                frames,
+                data,
+                held,
+            } => {
+                if !held {
+                    note_call(calls, workers, channel);
+                }
+                if if raw_voice.all { !held } else { data } {
+                    raw_voice.write(channel, workers, &frames);
+                }
             }
             Event::Voice { channel, pcm } => {
                 note_call(calls, workers, channel);

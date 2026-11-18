@@ -75,6 +75,9 @@ pub struct ChannelStatus {
     pub kind: Kind,
     /// A C channel of the older kind: 21000 bit/s, 9.6 kbit/s speech.
     pub wide: bool,
+    /// Its frames are not speech though the channel is clean: a fax or
+    /// data call (21000 bit/s only).
+    pub data: bool,
     /// Carrier offset from the centre of the input, in Hz (tracked).
     pub carrier_hz: f64,
     /// Carrier offset when the channel was acquired (for the drift figure).
@@ -145,6 +148,7 @@ impl ChannelStatus {
             clock_ppm: 0.0,
             scatter: Vec::new(),
             wide: false,
+            data: false,
             frames: 0,
             uw_wrong: 0,
             uw_bits: 0,
@@ -201,10 +205,13 @@ pub enum Event {
     /// Decoded audio, 8 kHz, for the recorder and the loudspeaker.
     Voice { channel: ChannelId, pcm: Vec<i16> },
     /// Half a second of a 21000 bit/s call: its 25 voice frames as they
-    /// came, for whoever wants the bits.
+    /// came, for whoever wants the bits. `data`: the call is not speech.
+    /// `held`: frames from before that was known, sent again.
     RawVoice {
         channel: ChannelId,
         frames: Vec<[u8; c21frame::VOICE_BYTES]>,
+        data: bool,
+        held: bool,
     },
     /// The deep scan found an Aero line pair here (offset from the centre).
     Found {
@@ -385,7 +392,17 @@ impl Resync {
     }
 }
 
+/// Half seconds of clean channel with no speech in them before a call is
+/// taken as data, and how many frames from before that are kept (a minute).
+const DATA_HALVES: u32 = 4;
+const HELD_FRAMES: usize = 3000;
+
 struct Running {
+    /// 21000 bit/s: half seconds running that were clean but not speech,
+    /// whether the call is taken as data, and its frames until that is known.
+    data_halves: u32,
+    data: bool,
+    held: Vec<[u8; c21frame::VOICE_BYTES]>,
     /// The tone frame last put in the log.
     last_tone: Option<[u8; 9]>,
     resync: Resync,
@@ -629,6 +646,9 @@ fn start_chain(
             t_data: Reassembler::new(),
         });
     Running {
+        data_halves: 0,
+        data: false,
+        held: Vec::new(),
         last_tone: None,
         resync: Resync::new(ddc.out_rate(), bit_rate),
         search_hz: req.search_hz.min(f64::from(bit_rate) * 0.4),
@@ -781,9 +801,12 @@ fn process(
                     });
                 }
                 let mut pcm = Vec::with_capacity(f.voice.len() * mplpc::FRAME_SAMPLES);
+                let mut speech = 0;
                 for v in &f.voice {
                     let mut samples = [0i16; mplpc::FRAME_SAMPLES];
-                    voice_kinds[match voice.decode(v, &mut samples) {
+                    let kind = voice.decode(v, &mut samples);
+                    speech += u32::from(kind == mplpc::FrameKind::Voice);
+                    voice_kinds[match kind {
                         mplpc::FrameKind::Voice => 0,
                         mplpc::FrameKind::Repeat => 1,
                         mplpc::FrameKind::Mute => 2,
@@ -794,9 +817,32 @@ fn process(
                     pcm.extend_from_slice(&samples);
                 }
                 let _ = events.send(Event::Voice { channel: id, pcm });
+                // A clean channel whose frames all fail the speech codec's
+                // checks carries something else: fax or data. Their layout
+                // is not known, so they are kept for working it out.
+                let clean = f.channel_errors * 50 < f.channel_bits;
+                if clean && speech <= 5 {
+                    r.data_halves += 1;
+                } else if clean {
+                    r.data_halves = 0;
+                }
+                if !r.data && r.data_halves >= DATA_HALVES {
+                    r.data = true;
+                    let _ = events.send(Event::RawVoice {
+                        channel: id,
+                        frames: std::mem::take(&mut r.held),
+                        data: true,
+                        held: true,
+                    });
+                }
+                if !r.data && r.held.len() < HELD_FRAMES {
+                    r.held.extend_from_slice(&f.voice);
+                }
                 let _ = events.send(Event::RawVoice {
                     channel: id,
                     frames: f.voice.to_vec(),
+                    data: r.data,
+                    held: false,
                 });
             }
             let st = decoder.stats();
@@ -1054,6 +1100,7 @@ fn process(
         s.corrected_bits,
         s.lock_losses,
     ) = totals;
+    s.data = r.data;
     for (a, b) in s.voice.iter_mut().zip(voice_kinds) {
         *a += b;
     }

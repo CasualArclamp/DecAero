@@ -25,7 +25,8 @@ pub fn p_name(kind: u8) -> &'static str {
         0x15 => "log-on/log-off acknowledge",
         0x16 => "log-on prompt",
         0x17 => "data channel reassignment",
-        0x21 => "call announcement",
+        0x20 => "call announcement",
+        0x21 => "call information (service address)",
         0x26 => "reserved 26",
         0x28 => "data EIRP table",
         0x30 => "call progress",
@@ -168,6 +169,71 @@ impl CallProgress {
         }
         out
     }
+}
+
+/// A call announced to an aircraft on the P channel (type 0x20): what kind
+/// of call the voice channel that follows will carry. ICAO Annex 10 Volume
+/// III (Amendment 80), Appendix 2 figure A2-8 and Appendix 3 items 14 and 62.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Announcement {
+    pub aes: u32,
+    pub ges: u8,
+    pub q_no: u8,
+    pub call_ref: u8,
+    /// 1 telephone, 2 data through a modem on the ground (and fax), 3 data
+    /// to a digital network.
+    pub service: u8,
+    /// The modem or speed of a data call (see `describe`).
+    pub rate: u8,
+}
+
+impl Announcement {
+    /// A data or fax call: the voice channel will not carry speech.
+    pub fn is_data(&self) -> bool {
+        matches!(self.service, 2 | 3)
+    }
+
+    pub fn describe(&self) -> String {
+        match (self.service, self.rate) {
+            (1, _) => "telephone".into(),
+            (2, 15) => "fax (Group 3)".into(),
+            (2, r) => format!(
+                "data by modem, {}",
+                match r {
+                    1 => "V.22 1200 bit/s",
+                    2 => "V.22 bis 1200 bit/s",
+                    3 => "V.22 bis 2400 bit/s",
+                    4 => "V.32 4800 bit/s",
+                    5 => "V.32 9600 bit/s",
+                    6 => "V.23 1200 bit/s",
+                    _ => "modem not named",
+                }
+            ),
+            (3, r) => format!(
+                "data, digital, {}",
+                match r {
+                    1 => "1200 bit/s",
+                    2 => "2400 bit/s",
+                    3 => "4800 bit/s",
+                    4 => "9600 bit/s",
+                    _ => "speed not named",
+                }
+            ),
+            (s, _) => format!("service {s}"),
+        }
+    }
+}
+
+/// Read a call announcement; `None` for any other type.
+pub fn announcement(b: &[u8; SU_BYTES]) -> Option<Announcement> {
+    (b[0] == 0x20).then(|| Announcement {
+        aes: aes(b),
+        ges: b[4],
+        q_no: b[5] >> 4,
+        call_ref: b[5] & 0x0f,
+        service: b[6] & 0x0f,
+        rate: b[7] >> 4,
+    })
 }
 
 /// Read a call progress unit; `None` for any other type.
@@ -481,6 +547,21 @@ mod tests {
         assert_eq!(a.label, "H1");
         assert_eq!(a.text, "HI");
         assert!(a.parity_ok && !a.more);
+    }
+
+    #[test]
+    fn call_announcement_is_read() {
+        // A fax call from the ground, general priority, call 9.
+        let mut b = [0u8; SU_BYTES];
+        b[..8].copy_from_slice(&[0x20, 0x89, 0x63, 0xE6, 0x90, 0xD9, 0x52, 0xF0]);
+        let a = announcement(&b).unwrap();
+        assert_eq!((a.aes, a.ges, a.q_no, a.call_ref), (0x8963E6, 0x90, 0xD, 9));
+        assert!(a.is_data());
+        assert_eq!(a.describe(), "fax (Group 3)");
+        b[6] = 0x51;
+        assert_eq!(announcement(&b).unwrap().describe(), "telephone");
+        b[0] = 0x30;
+        assert!(announcement(&b).is_none());
     }
 
     #[test]
