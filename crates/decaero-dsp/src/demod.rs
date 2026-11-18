@@ -61,7 +61,8 @@ pub struct DemodStatus {
     pub offset_hz: f64,
     /// Sample clock error against the nominal bit rate, in parts per million.
     pub clock_ppm: f64,
-    /// Recent samples turned onto the real axis, for the constellation.
+    /// Recent samples for the constellation: turned onto the real axis for
+    /// A-BPSK, the two rails paired into four corners for A-QPSK.
     pub scatter: Vec<Complex32>,
 }
 
@@ -369,6 +370,17 @@ impl Demod {
             for s in &mut scatter {
                 *s *= scale;
             }
+            // Offset QPSK is shown with the offset taken out: the decision
+            // of one rail against the next decision of the other, which is
+            // the four corners of plain QPSK. (Drawn as it is sampled, the
+            // other rail is caught half way between its decisions and
+            // smears into three lumps.)
+            if matches!(self.modulation, Modulation::AQpsk { .. }) {
+                scatter = scatter
+                    .chunks_exact(2)
+                    .map(|pair| Complex32::new(pair[0].re, pair[1].re))
+                    .collect();
+            }
             self.status.scatter = scatter;
             for (i, &v) in a.iter().enumerate() {
                 let v = v * scale;
@@ -487,6 +499,38 @@ mod tests {
             st.es_n0_db
         );
         assert!((st.offset_hz - 0.8).abs() < 0.5, "offset {}", st.offset_hz);
+    }
+
+    /// Offset QPSK is shown as plain QPSK's four corners, not as two
+    /// columns with the other rail smeared between its decisions.
+    #[test]
+    fn offset_qpsk_is_shown_as_four_corners() {
+        // MSK is offset QPSK with half-sine pulses: near enough to the root
+        // raised cosine for the corners to stand clear.
+        let mut seed = 9;
+        let bits: Vec<u8> = (0..4000).map(|_| (lcg(&mut seed) >> 31) as u8).collect();
+        let signal = msk(&bits, 8, 0.0);
+        let mut demod = Demod::new(Modulation::AQpsk { roll_off: 1.0 }, 600, 4800.0, 0.0);
+        let mut soft = Vec::new();
+        for chunk in signal.chunks(1000) {
+            demod.process(chunk, &mut soft);
+        }
+        let scatter = &demod.status().scatter;
+        assert!(scatter.len() >= 16, "{}", scatter.len());
+        let corner = |v: f32| (0.5..1.6).contains(&v.abs());
+        let good = scatter
+            .iter()
+            .filter(|p| corner(p.re) && corner(p.im))
+            .count();
+        assert!(
+            good * 10 >= scatter.len() * 9,
+            "{good} of {}",
+            scatter.len()
+        );
+        // All four are used.
+        for (re, im) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            assert!(scatter.iter().any(|p| p.re * re > 0.0 && p.im * im > 0.0));
+        }
     }
 
     #[test]

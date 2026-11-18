@@ -108,6 +108,12 @@ CRC good / bad, voice frames repeated / muted, CPU.
 
 Square, redrawn at 60 frames a second, small dots.
 
+A-BPSK is drawn as sampled, turned onto the real axis: two lumps. A-QPSK is
+offset QPSK and is drawn with the offset taken out (Rory, 2026-11-18): each
+decision of one rail against the next decision of the other, so it shows
+plain QPSK's four corners. Drawn as sampled it was two columns of three
+lumps, the other rail being caught half way between its decisions.
+
 ## Voice follow
 
 1. The P channel's C-channel assignment signal units name the frequency and
