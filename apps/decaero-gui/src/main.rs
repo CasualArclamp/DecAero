@@ -236,6 +236,9 @@ impl App {
                 // Not while the range is still to be dragged.
                 follow: self.follow && !self.follow_pick,
                 follow_range: self.follow_range,
+                // Beside the calls: the voice frames of 21000 bit/s calls, whose
+                // codec is not known, kept for working it out.
+                raw_voice_dir: self.recorder.as_ref().map(|r| r.dir().join("21k")),
                 feeds: self.feeds.clone(),
                 ..Options::default()
             },
@@ -1142,7 +1145,7 @@ impl App {
                             }
                             let listening = self.view.listening == Some(c.id);
                             let mode =
-                                format!("{}{}", c.kind.label(), if listening { " 🔊" } else { "" });
+                                format!("{}{}", c.label(), if listening { " 🔊" } else { "" });
                             if ui.selectable_label(listening, mode).clicked() && c.kind == Kind::C {
                                 listen = Some(if listening { None } else { Some(c.id) });
                             }
@@ -1203,7 +1206,7 @@ impl App {
                 RichText::new(format!(
                     "{:+.2} kHz · Aero {}",
                     c.carrier_hz / 1e3,
-                    c.kind.label()
+                    c.label()
                 ))
                 .color(WHITE)
                 .size(14.0),
@@ -1260,6 +1263,7 @@ impl App {
         trend(ui, rect, &c.history);
 
         let code = match c.kind {
+            Kind::C if c.wide => "Viterbi K=7 · rate 1/2",
             Kind::C => "Viterbi K=7 · rate 2/3",
             _ => "Viterbi K=7 · rate 1/2",
         };
@@ -1328,7 +1332,15 @@ impl App {
                 ui,
                 "voice",
                 &[
-                    ("Codec", "AMBE 4.8k".to_string(), None),
+                    (
+                        "Codec",
+                        if c.wide {
+                            "9.6k, not known: no sound, frames saved".to_string()
+                        } else {
+                            "AMBE 4.8k".to_string()
+                        },
+                        None,
+                    ),
                     (
                         "Frames",
                         format!("{} voiced · {} repeated", c.voice[0], c.voice[1]),

@@ -9,6 +9,7 @@
 
 use crate::feed::Link;
 use decaero_ambe::{Decoder as VoiceDecoder, FRAME_SAMPLES, FrameKind};
+use decaero_core::c21frame::{self, C21Decoder};
 use decaero_core::cframe::CDecoder;
 use decaero_core::pframe::{PDecoder, PFormat, SU_BYTES};
 use decaero_core::rtframe::{self, Burst, RReassembler};
@@ -71,6 +72,9 @@ impl Kind {
 pub struct ChannelStatus {
     pub id: ChannelId,
     pub kind: Kind,
+    /// A C channel of the older kind: 21000 bit/s, 9.6 kbit/s speech (whose
+    /// codec is not known, so there is no sound).
+    pub wide: bool,
     /// Carrier offset from the centre of the input, in Hz (tracked).
     pub carrier_hz: f64,
     /// Carrier offset when the channel was acquired (for the drift figure).
@@ -116,6 +120,15 @@ pub struct ChannelStatus {
 }
 
 impl ChannelStatus {
+    /// The channel's kind in words, with its bit rate.
+    pub fn label(&self) -> String {
+        if self.kind == Kind::C && self.wide {
+            "C 21000".into()
+        } else {
+            self.kind.label()
+        }
+    }
+
     pub fn new(id: ChannelId, carrier_hz: f64, started_s: f64) -> Self {
         Self {
             id,
@@ -131,6 +144,7 @@ impl ChannelStatus {
             pre_fec_ber: 0.0,
             clock_ppm: 0.0,
             scatter: Vec::new(),
+            wide: false,
             frames: 0,
             uw_wrong: 0,
             uw_bits: 0,
@@ -186,6 +200,12 @@ pub enum Event {
     },
     /// Decoded audio, 8 kHz, for the recorder and the loudspeaker.
     Voice { channel: ChannelId, pcm: Vec<i16> },
+    /// Half a second of a 21000 bit/s call: its 25 voice frames as they
+    /// came (the codec is not known).
+    RawVoice {
+        channel: ChannelId,
+        frames: Vec<[u8; c21frame::VOICE_BYTES]>,
+    },
     /// The deep scan found an Aero line pair here (offset from the centre).
     Found {
         offset_hz: f64,
@@ -265,6 +285,8 @@ enum Chain {
         decoder: CDecoder,
         voice: VoiceDecoder,
     },
+    /// The 21000 bit/s C channel.
+    C21 { decoder: C21Decoder },
 }
 
 /// Catches R and T bursts on a channel that carries no continuous P signal.
@@ -563,6 +585,13 @@ fn start_chain(
         0.0,
     );
     let (chain, kind, code_rate) = match PFormat::from_rate(bit_rate) {
+        _ if bit_rate == 21_000 => (
+            Chain::C21 {
+                decoder: C21Decoder::new(),
+            },
+            Kind::C,
+            0.5,
+        ),
         Some(f) => (
             Chain::P {
                 decoder: PDecoder::new(f),
@@ -583,15 +612,18 @@ fn start_chain(
     {
         let mut s = status.lock().unwrap();
         s.kind = kind;
+        s.wide = bit_rate == 21_000;
         s.carrier_hz = carrier;
         s.acquired_hz = carrier;
     }
-    let bursts = PFormat::from_rate(bit_rate).map(|_| BurstPath {
-        receiver: BurstReceiver::new(ddc.out_rate(), bit_rate),
-        bit_rate,
-        r_data: RReassembler::new(),
-        t_data: Reassembler::new(),
-    });
+    let bursts = PFormat::from_rate(bit_rate)
+        .filter(|_| bit_rate != 21_000)
+        .map(|_| BurstPath {
+            receiver: BurstReceiver::new(ddc.out_rate(), bit_rate),
+            bit_rate,
+            r_data: RReassembler::new(),
+            t_data: Reassembler::new(),
+        });
     Running {
         last_tone: None,
         resync: Resync::new(ddc.out_rate(), bit_rate),
@@ -711,6 +743,62 @@ fn process(
                     st.lock_losses,
                 ),
                 kind,
+            )
+        }
+        Chain::C21 { decoder } => {
+            let mut out = Vec::new();
+            decoder.push(soft, &mut out);
+            for f in &out {
+                frames += 1;
+                frame_errors += f.channel_errors;
+                frame_bits += f.channel_bits;
+                for u in f.units.iter().filter(|u| u.crc_ok) {
+                    if u.bytes[0] == 0x01 {
+                        continue;
+                    }
+                    let name = match u.bytes[0] {
+                        0x30 => "call progress",
+                        0x60 => "telephony acknowledge",
+                        _ => "sub-band signalling",
+                    };
+                    if matches!(u.bytes[0], 0x30 | 0x60) {
+                        let aes = (u32::from(u.bytes[1]) << 16)
+                            | (u32::from(u.bytes[2]) << 8)
+                            | u32::from(u.bytes[3]);
+                        aircraft = Some((aes, u.bytes[4]));
+                    }
+                    last_unit = Some(name.to_string());
+                    let _ = events.send(Event::Unit {
+                        channel: id,
+                        kind: Kind::C,
+                        seconds,
+                        bytes: u.bytes,
+                        name,
+                    });
+                }
+                // A frame is taken as speech if it is not all one value
+                // (what an idle codec sends is not known either).
+                for v in &f.voice {
+                    voice_kinds[if v.iter().all(|b| *b == v[0]) { 2 } else { 0 }] += 1;
+                }
+                let _ = events.send(Event::RawVoice {
+                    channel: id,
+                    frames: f.voice.to_vec(),
+                });
+            }
+            let st = decoder.stats();
+            (
+                decoder.locked(),
+                (
+                    st.frames,
+                    st.uw_bits_wrong,
+                    st.uw_bits,
+                    st.crc_good,
+                    st.crc_bad,
+                    st.channel_errors,
+                    st.lock_losses,
+                ),
+                Kind::C,
             )
         }
         Chain::C { decoder, voice } => {

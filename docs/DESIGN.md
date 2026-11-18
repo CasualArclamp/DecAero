@@ -27,7 +27,7 @@ carrier appears. The look is DecSAT's.
 | R | aircraft to ground, burst | 600, 1200, 10500 | A-BPSK / A-QPSK | rate 1/2, 64 x 5 | one 19-octet signal unit |
 | T | aircraft to ground, burst | 600, 1200, 10500 | A-BPSK / A-QPSK | rate 1/2, 64 x (5 + 3n) | 6-octet header, n 12-octet signal units |
 | C | both ways, per call | 8400 | A-QPSK | rate 2/3 (punctured K=7), 16 blocks of 64 x 4 | 52-bit unique word per rail, 25 voice frames of 96 bits, 3 sub-band signal units, every 0.5 s |
-| C | both ways (legacy) | 21000 | A-QPSK | as the spec gives | 9.6 kbit/s voice: detected and named, not decoded |
+| C | both ways (legacy) | 21000 | A-QPSK | rate 1/2 K=7, 27 blocks of 64 x 6 | 9.6 kbit/s voice: frame and signalling decoded (worked out from a recording), speech not (codec unknown) |
 
 Layouts are taken from JAERO (`aerol.cpp`), which is the open reference; the
 Inmarsat SDM is not public. Constants cite the JAERO function they come from.
@@ -305,17 +305,36 @@ by time, frequency and width. The level of the first block is put 12 dB under
 full scale and that scale is kept. A retune, the end of the input or a
 disconnect ends it (`decaero-engine/src/iqrec.rs`).
 
-### The 21000 bit/s voice channel (9.6 kbit/s codec): open
+### The 21000 bit/s voice channel (9.6 kbit/s speech)
 
-Asked for by Rory, 2026-11-18. Not decoded, and nothing to build on yet:
-JAERO has no frame layout for the channel and no decoder for the codec (the
-9.6 kbit/s Skyphone codec, multipulse-excited LPC by the sound of ARINC 741),
-and no public description of its bits was found. Rory's recording
-`areo phone assignmeant.wav` (5 MS/s, 8 bit, using two of its bits) shows the
-carrier at +2.3196 MHz only 1 dB over the noise, with no symbol-rate line in
-its square: nothing to demodulate. Wanted: a strong capture of one (the I/Q
-button), then the demodulator and frame are worked out from it; the codec
-needs its definition or a lot of luck.
+Asked for by Rory, 2026-11-18. JAERO does not receive it and nothing public
+describes it, so the frame was worked out from his recording of a call
+(`areo phone assignmeant.wav`, the carrier 1.34 MHz under the centre for the
+first half minute), with the 8400 bit/s channel as the model:
+
+1. Squared, the carrier shows a line pair 21000 Hz apart: offset QPSK at
+   21000 bit/s. The demodulator takes it as it is (roll-off 1.0);
+   `decaero-dsp --example softbits` writes its soft bits.
+2. The bits repeat with a period of 10500 (half a second), and 132 of them
+   are the same in every frame: a 52-bit word on each rail and 28 more bits.
+3. `decaero-core --example c21probe` tried header lengths and interleaver
+   widths against the Viterbi decoder: 132 bits of header and 27 blocks of
+   64 x 6 at rate 1/2 leave 0.1 % channel errors (anything else, 5 % or more).
+4. Descrambled, the 5184 information bits have 12 bits every 204 that hold
+   12-octet signal units with good CRCs (fill-in units and call progress):
+   84 spare bits, then 25 times 12 signalling bits and a 192-bit voice frame.
+
+That is `decaero-core/src/c21frame.rs`, and it is right as far as the CRCs
+say so (one call, one ground station). In the engine a carrier of this kind
+is a C channel marked `wide`: named "C 21000", its signal units and call
+progress shown as for 8400, its call in the calls table. Follow tries both
+voice rates on an assigned channel; a box dragged wider than 12 kHz does too.
+The deep scan does not look for it.
+
+The speech is not decoded: the codec (9.6 kbit/s, the Skyphone one, by the
+sound of ARINC 741 multipulse-excited LPC) is not publicly described. Its
+frames are saved as they come, 24 octets each and 50 a second, in a `21k`
+folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
 
 ### Tuning
 

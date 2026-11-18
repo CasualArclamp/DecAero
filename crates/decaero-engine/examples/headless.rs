@@ -99,7 +99,7 @@ fn main() {
             "#{:<3} {:>10.1} Hz  {:<8} {}  Eb/N0 {:>4.1} dB  margin {:>+5.1} dB  FEC load {:>3.0}%  BER {:.1e}  frames {:>3}  CRC {}/{}  cpu {:.2}  {}",
             c.id,
             c.carrier_hz,
-            c.kind.label(),
+            c.label(),
             if c.locked { "LOCK" } else { "    " },
             c.eb_n0_db,
             c.margin_db,

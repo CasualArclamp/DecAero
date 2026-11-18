@@ -124,6 +124,9 @@ pub struct Options {
     pub follow: bool,
     /// Follow only inside this part of the band (Hz from the centre).
     pub follow_range: Option<(f64, f64)>,
+    /// Where the voice frames of 21000 bit/s calls are written as they come
+    /// (their codec is not known), a file a call; nowhere if `None`.
+    pub raw_voice_dir: Option<std::path::PathBuf>,
     /// dB over the floor a carrier must reach to be given a decoder.
     pub carrier_db: f32,
     /// Where decoded messages and positions are sent on to.
@@ -138,6 +141,7 @@ impl Default for Options {
             center_hz: 0.0,
             follow: true,
             follow_range: None,
+            raw_voice_dir: None,
             carrier_db: 4.0,
             feeds: feed::FeedOptions::default(),
         }
@@ -280,6 +284,69 @@ fn iq_stop(iq: &mut Option<iqrec::IqRecorder>, shared: &Shared) {
         let mut v = shared.view.lock().unwrap();
         v.iq_recording = None;
         v.iq_note = note;
+    }
+}
+
+/// A voice frame came on this channel: its call goes on, or a new one begins.
+fn note_call(calls: &mut Vec<Call>, workers: &[Worker], channel: ChannelId) {
+    match calls
+        .iter_mut()
+        .rev()
+        .find(|c| c.channel == channel && c.end_s.is_none())
+    {
+        Some(c) => c.frames += 1,
+        None => {
+            let (carrier_hz, start_s) = workers
+                .iter()
+                .find(|w| w.id == channel)
+                .map(|w| w.status.lock().unwrap())
+                .map(|s| (s.carrier_hz, s.last_good_s))
+                .unwrap_or((0.0, 0.0));
+            calls.push(Call {
+                channel,
+                carrier_hz,
+                aes: None,
+                ges: None,
+                start_s,
+                end_s: None,
+                frames: 1,
+                progress: None,
+                eirp_db: None,
+                cause: None,
+            });
+        }
+    }
+}
+
+/// The voice frames of 21000 bit/s calls, kept as they come: one file a
+/// call, 24 octets a frame, 50 frames a second.
+struct RawVoice {
+    dir: Option<std::path::PathBuf>,
+    files: std::collections::HashMap<ChannelId, std::fs::File>,
+}
+
+impl RawVoice {
+    fn write(&mut self, channel: ChannelId, workers: &[Worker], frames: &[[u8; 24]]) {
+        use std::io::Write;
+        let Some(dir) = &self.dir else { return };
+        let file = self.files.entry(channel).or_insert_with(|| {
+            let khz = workers
+                .iter()
+                .find(|w| w.id == channel)
+                .map_or(0.0, |w| w.status.lock().unwrap().carrier_hz / 1e3);
+            let unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let _ = std::fs::create_dir_all(dir);
+            let path = dir.join(format!("voice21k_{unix}_{khz:+.1}kHz.bin"));
+            // If it cannot be made the frames go nowhere, quietly.
+            std::fs::File::create(&path)
+                .or_else(|_| std::fs::File::create(if cfg!(windows) { "NUL" } else { "/dev/null" }))
+                .expect("the null device opens")
+        });
+        for f in frames {
+            let _ = file.write_all(f);
+        }
     }
 }
 
@@ -486,7 +553,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         let stop = Arc::new(AtomicBool::new(false));
         // A voice channel a P channel has just assigned: the carrier comes
         // up some seconds later, and a call may be short.
-        let eager = known_rate.is_none() && rates == [8400];
+        let eager = known_rate.is_none() && rates == [8400, 21_000];
         let req = Request {
             id,
             in_rate: rate,
@@ -534,6 +601,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     };
 
     let mut menu_seen = 0;
+    let mut raw_voice = RawVoice {
+        dir: options.raw_voice_dir.clone(),
+        files: std::collections::HashMap::new(),
+    };
     // Where follow may start decoders (Hz from the centre); everywhere if none.
     let mut follow_range: Option<(f64, f64)> = options.follow_range;
     let mut iq: Option<iqrec::IqRecorder> = None;
@@ -553,6 +624,9 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     deleted.retain(|(hz, reach)| (hz - offset_hz).abs() > reach + width / 2.0);
                     let rates = if width < 2500.0 {
                         vec![600, 1200]
+                    } else if width > 12_000.0 {
+                        // Wide enough for the older voice channel.
+                        vec![21_000, 8400, 10500, 1200, 600]
                     } else {
                         vec![8400, 10500, 1200, 600]
                     };
@@ -658,6 +732,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 &mut Vec::new(),
                 &mut Vec::new(),
                 &feeds,
+                &mut raw_voice,
             );
             let mut v = shared.view.lock().unwrap();
             v.ended = true;
@@ -796,6 +871,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             &mut assignments,
             &mut finds,
             &feeds,
+            &mut raw_voice,
         );
 
         // Voice follow, part three: what the deep scan found under the noise.
@@ -886,7 +962,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                         &mut next_id,
                         offset,
                         6000.0,
-                        vec![8400],
+                        // The assignment does not say which voice channel.
+                        vec![8400, 21_000],
                         seconds,
                         None,
                     );
@@ -1059,6 +1136,7 @@ fn drain_events(
     assignments: &mut Vec<decaero_core::su::CAssignment>,
     finds: &mut Vec<(f64, u32)>,
     feeds: &feed::Feeds,
+    raw_voice: &mut RawVoice,
 ) {
     let mut lines = Vec::new();
     let mut line =
@@ -1239,33 +1317,12 @@ ADS-C {}",
                 );
                 assignments.push(assignment);
             }
+            Event::RawVoice { channel, frames } => {
+                note_call(calls, workers, channel);
+                raw_voice.write(channel, workers, &frames);
+            }
             Event::Voice { channel, pcm } => {
-                let w = workers.iter().find(|w| w.id == channel);
-                match calls
-                    .iter_mut()
-                    .rev()
-                    .find(|c| c.channel == channel && c.end_s.is_none())
-                {
-                    Some(c) => c.frames += 1,
-                    None => {
-                        let (carrier_hz, start_s) = w
-                            .map(|w| w.status.lock().unwrap())
-                            .map(|s| (s.carrier_hz, s.last_good_s))
-                            .unwrap_or((0.0, 0.0));
-                        calls.push(Call {
-                            channel,
-                            carrier_hz,
-                            aes: None,
-                            ges: None,
-                            start_s,
-                            end_s: None,
-                            frames: 1,
-                            progress: None,
-                            eirp_db: None,
-                            cause: None,
-                        });
-                    }
-                }
+                note_call(calls, workers, channel);
                 if listening == Some(channel) {
                     let mut a = shared.audio.lock().unwrap();
                     a.extend(pcm.iter().copied());
