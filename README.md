@@ -30,6 +30,8 @@ written in Rust. Receive only.
   started there and you hear the call.
 - Every call is saved as a small Ogg Opus file (about 5 MB an hour), named by
   date, time, frequency and aircraft, with a line in `calls.csv`.
+- Call progress is read: who rang whom, the call's priority (distress,
+  urgent, general) and how far it has got (status, connect, result, release).
 
 **How well it is receiving**
 - For each decoder: constellation, margin above the decode limit, Eb/N0,

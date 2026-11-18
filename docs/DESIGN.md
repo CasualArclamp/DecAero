@@ -124,6 +124,26 @@ lumps, the other rail being caught half way between its decisions.
 3. A decoder that loses its carrier for a few seconds is retired and the call
    is closed in the log.
 
+### Call progress (Rory's table, 2026-11-18)
+
+The call progress unit (0x30), 12 octets as on the P channel and the C
+channel's sub-band, from Rory's `aero_call.ods` (`su::call_progress`):
+
+| Octet | Field |
+|---|---|
+| 1 | 0x30 |
+| 2 to 4 | AES |
+| 5 | GES |
+| 6 | Q number, the call's priority (F distress, E urgent, D general), over the application reference, the call's number (0 to 7 aircraft to ground, 8 to F ground to aircraft) |
+| 7 | low nibble the report type: 1 status, 2 connect, 3 test, 4 result, 5 release. High nibble: in a status report the EIRP adjustment (0 none, 1 to 3 dB up, D to F for 3 to 1 dB down); in a result report the location |
+| 8 | result report only: a reserved bit, the cause's class (3 bits) and value (4 bits) |
+| 11, 12 | CRC |
+
+The log line of such a unit says it in words, and the calls table has the
+last one of each call. The cause's classes and values are not named (the
+table points at pages 264 and 265 of a document not held here). On the R
+channel the unit is 19 octets and laid out otherwise: not read there.
+
 ## Milestones
 
 0. Repo, codec port, channel code primitives. **Done.**

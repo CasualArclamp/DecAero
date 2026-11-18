@@ -81,6 +81,118 @@ pub struct CAssignment {
     pub spot_beam: bool,
 }
 
+/// A call progress unit (type 0x30): how a telephone call is getting on.
+/// Layout from Rory's table of the unit (`aero_call.ods`, 2026-11-18):
+/// octet 6 is the Q number (the call's priority) over the application
+/// reference (the call's number), octet 7 a report-specific nibble over the
+/// report type, and a result report has its cause in octet 8.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CallProgress {
+    pub aes: u32,
+    pub ges: u8,
+    /// The Q number: 0xF distress, 0xE urgent, 0xD general.
+    pub q_no: u8,
+    /// The application reference: 0 to 7 for a call the aircraft made,
+    /// 8 to 15 for one from the ground.
+    pub call_ref: u8,
+    /// 1 status, 2 connect, 3 test, 4 result, 5 release.
+    pub report: u8,
+    /// A status report: the change asked of the aircraft's power, dB.
+    pub eirp_db: Option<i8>,
+    /// A result report: where the cause arose, and its class and value.
+    pub cause: Option<Cause>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Cause {
+    pub location: u8,
+    pub class: u8,
+    pub value: u8,
+}
+
+impl CallProgress {
+    pub fn priority(&self) -> &'static str {
+        match self.q_no {
+            0xF => "distress",
+            0xE => "urgent",
+            0xD => "general",
+            _ => "",
+        }
+    }
+
+    pub fn report_name(&self) -> &'static str {
+        match self.report {
+            1 => "status",
+            2 => "connect",
+            3 => "test",
+            4 => "result",
+            5 => "release",
+            _ => "",
+        }
+    }
+
+    pub fn from_ground(&self) -> bool {
+        self.call_ref >= 8
+    }
+
+    /// One line for the log.
+    pub fn describe(&self) -> String {
+        let mut out = match self.report_name() {
+            "" => format!("report {}", self.report),
+            name => name.to_string(),
+        };
+        match self.priority() {
+            "" => out += &format!("  Q {:X}", self.q_no),
+            p => out += &format!("  {p} priority"),
+        }
+        out += &format!(
+            "  call {} ({})",
+            self.call_ref,
+            if self.from_ground() {
+                "ground to air"
+            } else {
+                "air to ground"
+            }
+        );
+        if let Some(db) = self.eirp_db {
+            out += &match db {
+                0 => "  power as it is".to_string(),
+                db => format!("  power {db:+} dB"),
+            };
+        }
+        if let Some(c) = self.cause {
+            out += &format!(
+                "  cause class {} value {} at location {}",
+                c.class, c.value, c.location
+            );
+        }
+        out
+    }
+}
+
+/// Read a call progress unit; `None` for any other type.
+pub fn call_progress(b: &[u8; SU_BYTES]) -> Option<CallProgress> {
+    if b[0] != 0x30 {
+        return None;
+    }
+    let report = b[6] & 0x0f;
+    // A four-bit signed number: 0xD is -3 dB.
+    let nibble = (b[6] >> 4) as i8;
+    Some(CallProgress {
+        aes: aes(b),
+        ges: b[4],
+        q_no: b[5] >> 4,
+        call_ref: b[5] & 0x0f,
+        report,
+        eirp_db: (report == 1).then_some(if nibble >= 8 { nibble - 16 } else { nibble }),
+        cause: (report == 4).then_some(Cause {
+            location: b[6] >> 4,
+            class: (b[7] >> 4) & 0x07,
+            value: b[7] & 0x0f,
+        }),
+    })
+}
+
 /// What one good signal unit means, as far as the GUI needs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Meaning {
@@ -369,5 +481,48 @@ mod tests {
         assert_eq!(a.label, "H1");
         assert_eq!(a.text, "HI");
         assert!(a.parity_ok && !a.more);
+    }
+
+    #[test]
+    fn call_progress_is_read() {
+        // Status: general priority, call 9 from the ground, power down 2 dB.
+        let mut b = [0u8; SU_BYTES];
+        b[..8].copy_from_slice(&[0x30, 0x89, 0x63, 0xE6, 0x90, 0xD9, 0xE1, 0x00]);
+        let p = call_progress(&b).unwrap();
+        assert_eq!((p.aes, p.ges), (0x8963E6, 0x90));
+        assert_eq!(
+            (p.priority(), p.call_ref, p.report_name()),
+            ("general", 9, "status")
+        );
+        assert_eq!((p.eirp_db, p.cause), (Some(-2), None));
+        assert_eq!(
+            p.describe(),
+            "status  general priority  call 9 (ground to air)  power -2 dB"
+        );
+        // Result: distress, call 2 from the aircraft, cause class 1 value 6.
+        b[5..8].copy_from_slice(&[0xF2, 0x34, 0x96]);
+        let p = call_progress(&b).unwrap();
+        assert_eq!(
+            (p.priority(), p.from_ground(), p.report_name()),
+            ("distress", false, "result")
+        );
+        assert_eq!(
+            p.cause,
+            Some(Cause {
+                location: 3,
+                class: 1,
+                value: 6
+            })
+        );
+        assert_eq!(p.eirp_db, None);
+        // Connect carries neither.
+        b[6] = 0x02;
+        let p = call_progress(&b).unwrap();
+        assert_eq!(
+            (p.report_name(), p.eirp_db, p.cause),
+            ("connect", None, None)
+        );
+        b[0] = 0x31;
+        assert!(call_progress(&b).is_none());
     }
 }

@@ -1554,11 +1554,13 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("calls-table")
-                    .num_columns(6)
+                    .num_columns(7)
                     .spacing([14.0, 3.0])
                     .striped(true)
                     .show(ui, |ui| {
-                        for h in ["start", "kHz", "aircraft", "ground", "length", ""] {
+                        for h in [
+                            "start", "kHz", "aircraft", "ground", "length", "progress", "",
+                        ] {
                             ui.label(RichText::new(h).color(DIM).size(11.0));
                         }
                         ui.end_row();
@@ -1577,6 +1579,38 @@ impl App {
                             ui.label(clock(
                                 call.end_s.unwrap_or(self.view.seconds) - call.start_s,
                             ));
+                            // The call's last progress report: who rang whom,
+                            // how urgent, and how far it has got.
+                            match &call.progress {
+                                Some(p) => {
+                                    let colour = match p.q_no {
+                                        0xF => BAD,
+                                        0xE => WARN,
+                                        _ => TEXT,
+                                    };
+                                    let text = format!(
+                                        "{} · {} · {}",
+                                        if p.from_ground() {
+                                            "from ground"
+                                        } else {
+                                            "from aircraft"
+                                        },
+                                        match p.priority() {
+                                            "" => "Q ?",
+                                            name => name,
+                                        },
+                                        match p.report_name() {
+                                            "" => "?",
+                                            name => name,
+                                        },
+                                    );
+                                    ui.label(RichText::new(text).color(colour))
+                                        .on_hover_text(p.describe());
+                                }
+                                None => {
+                                    ui.label(RichText::new("–").color(DIM));
+                                }
+                            }
                             if live {
                                 let on = self.view.listening == Some(call.channel);
                                 if ui

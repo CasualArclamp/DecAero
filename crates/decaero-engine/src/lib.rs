@@ -170,6 +170,8 @@ pub struct Call {
     pub start_s: f64,
     pub end_s: Option<f64>,
     pub frames: u64,
+    /// The last call progress unit seen on the call's channel.
+    pub progress: Option<decaero_core::su::CallProgress>,
 }
 
 /// A snapshot for the GUI.
@@ -1038,7 +1040,10 @@ fn drain_events(
                             psmc_mhz[0]
                         )
                     }
-                    _ => hex(&bytes[..10]),
+                    _ => match decaero_core::su::call_progress(&bytes) {
+                        Some(p) => format!("{}\n{}", p.describe(), hex(&bytes[..10])),
+                        None => hex(&bytes[..10]),
+                    },
                 };
                 if let Some(c) = calls
                     .iter_mut()
@@ -1047,6 +1052,9 @@ fn drain_events(
                 {
                     c.aes = aes.or(c.aes);
                     c.ges = ges.or(c.ges);
+                    if kind == Kind::C {
+                        c.progress = decaero_core::su::call_progress(&bytes).or(c.progress);
+                    }
                 }
                 line(
                     seconds,
@@ -1166,6 +1174,7 @@ ADS-C {}",
                             start_s,
                             end_s: None,
                             frames: 1,
+                            progress: None,
                         });
                     }
                 }
