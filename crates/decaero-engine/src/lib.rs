@@ -881,7 +881,15 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 // at the same distance above the centre.
                 let offset = if mirror_below { offset.abs() } else { offset };
                 let wide = bit_rate > 1200;
-                let reach = if wide { 4000.0 } else { 900.0 };
+                // The 21000 bit/s voice carrier is 2.5 times the others' width.
+                let widest = bit_rate == 21_000;
+                let reach = if widest {
+                    10_000.0
+                } else if wide {
+                    4000.0
+                } else {
+                    900.0
+                };
                 // Two carriers squared together leave a line pair half way
                 // between them: not a carrier.
                 let carriers: Vec<f64> = workers
@@ -901,7 +909,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 let echo = workers.iter().filter(|w| !w.closed).any(|w| {
                     let s = w.status.lock().unwrap();
                     let same_rate = matches!(s.kind, Kind::P(r) | Kind::Rt(r) if r == bit_rate)
-                        || (s.kind == Kind::C && bit_rate == 8400);
+                        || (s.kind == Kind::C && bit_rate == if s.wide { 21_000 } else { 8400 });
                     let steps = (offset - s.carrier_hz) / step;
                     same_rate && steps.round() != 0.0 && (steps - steps.round()).abs() * step < 8.0
                 });
@@ -938,7 +946,13 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     &mut workers,
                     &mut next_id,
                     offset,
-                    if wide { 6000.0 } else { 1500.0 },
+                    if widest {
+                        24_000.0
+                    } else if wide {
+                        6000.0
+                    } else {
+                        1500.0
+                    },
                     vec![bit_rate],
                     seconds,
                     Some(bit_rate),

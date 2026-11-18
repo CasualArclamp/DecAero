@@ -329,7 +329,8 @@ say so (one call, one ground station). In the engine a carrier of this kind
 is a C channel marked `wide`: named "C 21000", its signal units and call
 progress shown as for 8400, its call in the calls table. Follow tries both
 voice rates on an assigned channel; a box dragged wider than 12 kHz does too.
-The deep scan does not look for it.
+The deep scan looks for its line pair with the others (since 2026-11-19) and
+starts a 24 kHz wide decoder on a find.
 
 ### The 9.6 kbit/s speech codec (2026-11-19)
 

@@ -36,7 +36,9 @@ const EACH_SIDE: usize = 80;
 /// Length of the filter bank's transform for an input at `in_rate`.
 fn bank_size(in_rate: f64) -> usize {
     // Channels about 9.8 kHz apart: each takes in a 10500 bit/s carrier
-    // wherever it sits between two of them.
+    // wherever it sits between two of them. (The 21000 bit/s voice carrier
+    // is wider than a channel, but squared it still leaves its line pair,
+    // folded round the channel's sample rate, which the search allows for.)
     ((in_rate / 9766.0).round() as usize)
         .next_power_of_two()
         .max(8)
@@ -126,7 +128,7 @@ pub fn run(
             } else {
                 k as f64 - n as f64
             } * spacing;
-            let found = spectrum.find(&[8400, 10500, 1200, 600], spacing / 2.0 + 500.0);
+            let found = spectrum.find(&[21_000, 8400, 10500, 1200, 600], spacing / 2.0 + 500.0);
             spectrum.fade(KEEP);
             if std::env::var("AERO_SCAN_TRACE").is_ok()
                 && found.first().is_some_and(|f| f.strength > 2.8)
