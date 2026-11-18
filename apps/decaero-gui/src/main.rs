@@ -7,18 +7,20 @@
 //! waterfall with a mark per decoder), the calls and the channel activity.
 //! Right: messages and the aircraft seen.
 //!
-//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS] [--select HZ] [--view LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
+//! `decaero-gui [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ]] [--select HZ] [--view LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
 mod activity;
 mod aircraft;
 mod audio;
 mod band;
+mod freq_display;
 mod prefs;
 mod recorder;
 mod theme;
 
 use decaero_engine::channel::{ChannelId, ChannelStatus, Kind};
 use decaero_engine::feed::FeedOptions;
+use decaero_engine::smgui::{self, Value, Widget};
 use decaero_engine::{Command, Engine, FileSource, LogLine, Options, Source, View, net};
 use eframe::egui::{
     self, Align2, Color32, FontId, Frame, Margin, RichText, Sense, Stroke, Ui, pos2, vec2,
@@ -76,6 +78,9 @@ struct Shot {
     path: PathBuf,
     after: f64,
     requested: Option<Instant>,
+    /// For trying a retune unattended: after this many seconds, move the
+    /// centre by this many hertz.
+    step: Option<(f64, f64)>,
     /// Frames drawn and the time they took, for a line on how evenly the
     /// window was drawn: (frames, seconds, longest frame, frames over 25 ms).
     frames: (u32, f32, f32, u32),
@@ -130,6 +135,10 @@ struct App {
     radio_bias: bool,
     /// Gain control of the radio that is running.
     radio_control: Option<Arc<dyn decaero_radio::RadioControl>>,
+    /// An SDR++ server's controls for its radio, as last sent (and as
+    /// changed here since), with the number of the copy.
+    menu: Vec<Widget>,
+    menu_seq: u64,
     /// A radio was asked for on the command line: show its gains at once.
     radio_arg: bool,
     /// The engine is on a live input (no pause, no file speed).
@@ -153,6 +162,15 @@ struct App {
 }
 
 impl App {
+    /// A new centre frequency: kept, and sent to the engine (which tunes a
+    /// live input to it).
+    fn set_centre(&mut self, hz: f64) {
+        let hz = hz.clamp(0.0, 99_999_999_999.0);
+        let text = format!("{:.6}", hz / 1e6);
+        self.center_text = text.trim_end_matches('0').trim_end_matches('.').to_string();
+        self.send(Command::SetCenter(hz));
+    }
+
     fn center_hz(&self) -> f64 {
         self.center_text
             .trim()
@@ -164,6 +182,9 @@ impl App {
     /// Start the engine on a source, a recording or a live one.
     fn start(&mut self, source: Box<dyn Source>) {
         let live = source.live();
+        // A new input: whatever menu it has is new too.
+        self.menu.clear();
+        self.menu_seq = u64::MAX;
         let engine = Engine::start(
             source,
             Options {
@@ -465,8 +486,15 @@ impl App {
         if let Some((seq, _)) = rows.last() {
             self.rows_seen = *seq;
         }
-        self.band
-            .push_rows(rows.into_iter().map(|(_, r)| r), self.view.floor_db);
+        self.band.push_rows(
+            rows.into_iter().map(|(_, r)| r),
+            self.view.floor_db,
+            if self.view.live {
+                self.view.center_hz
+            } else {
+                0.0
+            },
+        );
         // Tell the engine what is on screen when that changes: zoomed in,
         // it makes a finer spectrum of just that part.
         if self.band.shown != self.shown_sent
@@ -564,6 +592,13 @@ impl App {
     }
 
     fn screenshot(&mut self, ctx: &egui::Context) {
+        if let Some(shot) = &mut self.shot
+            && let Some((at, by)) = shot.step
+            && self.started.elapsed().as_secs_f64() >= at
+        {
+            shot.step = None;
+            self.set_centre(self.center_hz() + by);
+        }
         let Some(shot) = &mut self.shot else { return };
         // The first seconds (start-up, textures being made) are left out.
         let dt = ctx.input(|i| i.unstable_dt);
@@ -684,13 +719,15 @@ impl App {
                 }
                 ui.separator();
             }
-            ui.label(RichText::new("centre").color(DIM));
-            let edit = ui.add(egui::TextEdit::singleline(&mut self.center_text).desired_width(92.0).hint_text("MHz"));
-            if edit.lost_focus() {
-                let hz = self.center_text.trim().parse::<f64>().map(|m| m * 1e6).unwrap_or(0.0);
-                self.send(Command::SetCenter(hz));
+            // The centre frequency in big digits, as DecSAT's: scroll or
+            // click a digit to step it, right-click to zero from there down.
+            let mut hz = self.center_hz();
+            if freq_display::show(ui, &mut hz, 0.0, 99_999_999_999.0, 30.0) {
+                self.set_centre(hz);
             }
-            ui.label(RichText::new("MHz").color(DIM));
+            ui.label(RichText::new("Hz").color(DIM)).on_hover_text(
+                "Centre frequency. Scroll or click a digit to step it, right-click to zero it and those after it. On the band, drag with the middle button to tune.",
+            );
             ui.separator();
             if ui.toggle_value(&mut self.follow, "Follow voice").on_hover_text("Start a decoder on every new carrier and every voice channel a P channel assigns").changed() {
                 self.send(Command::Follow(self.follow));
@@ -742,6 +779,97 @@ impl App {
                 }
             }
         });
+    }
+
+    /// The controls an SDR++ server hands out for its radio (sample rate,
+    /// gains and so on): a change is sent to the server, which answers with
+    /// the controls as they then stand.
+    fn server_bar(&mut self, ui: &mut Ui) {
+        let mut changed: Vec<(String, Value)> = Vec::new();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("server").color(DIM));
+            let mut enabled = true;
+            for w in &mut self.menu {
+                ui.add_enabled_ui(enabled, |ui| match w {
+                    Widget::Label(text) => {
+                        ui.label(RichText::new(text.as_str()).color(DIM));
+                    }
+                    Widget::Text(text) => {
+                        ui.label(text.as_str());
+                    }
+                    Widget::Disabled(_) => {}
+                    Widget::Combo { id, value, items } => {
+                        let now = items.get(*value as usize).cloned().unwrap_or_default();
+                        let before = *value;
+                        egui::ComboBox::from_id_salt(id.as_str())
+                            .selected_text(now)
+                            .show_ui(ui, |ui| {
+                                for (i, item) in items.iter().enumerate() {
+                                    ui.selectable_value(value, i as i32, item);
+                                }
+                            });
+                        if *value != before {
+                            changed.push((id.clone(), Value::Int(*value)));
+                        }
+                    }
+                    Widget::Button { id } => {
+                        if ui.button(smgui::shown(id)).clicked() {
+                            changed.push((id.clone(), Value::Pressed));
+                        }
+                    }
+                    Widget::Radio { id, on } => {
+                        if ui.radio(*on, smgui::shown(id)).clicked() {
+                            changed.push((id.clone(), Value::Pressed));
+                        }
+                    }
+                    Widget::SliderInt {
+                        id,
+                        value,
+                        min,
+                        max,
+                    } => {
+                        if ui.add(egui::Slider::new(value, *min..=*max)).changed() {
+                            changed.push((id.clone(), Value::Int(*value)));
+                        }
+                    }
+                    Widget::SliderFloat {
+                        id,
+                        value,
+                        min,
+                        max,
+                        step,
+                    } => {
+                        let slider =
+                            egui::Slider::new(value, *min..=*max).step_by(f64::from(*step));
+                        if ui.add(slider).changed() {
+                            changed.push((id.clone(), Value::Float(*value)));
+                        }
+                    }
+                    Widget::InputInt { id, value } => {
+                        if ui.add(egui::DragValue::new(value)).changed() {
+                            changed.push((id.clone(), Value::Int(*value)));
+                        }
+                    }
+                    Widget::Checkbox { id, value } => {
+                        if ui.checkbox(value, smgui::shown(id)).changed() {
+                            changed.push((id.clone(), Value::Bool(*value)));
+                        }
+                    }
+                    Widget::InputText { id, value } => {
+                        let edit = ui.add(egui::TextEdit::singleline(value).desired_width(120.0));
+                        if edit.lost_focus() {
+                            changed.push((id.clone(), Value::Text(value.clone())));
+                        }
+                    }
+                });
+                if let Widget::Disabled(on) = w {
+                    enabled = !*on;
+                }
+            }
+        });
+        for (id, value) in changed {
+            self.send(Command::Menu { id, value });
+        }
     }
 
     fn feeds_window(&mut self, ui: &mut Ui) {
@@ -1359,9 +1487,19 @@ impl App {
         let band_h = (total * 0.62).max(220.0);
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), band_h), Sense::click_and_drag());
+        self.band.tuned = if self.view.live {
+            self.center_hz()
+        } else {
+            0.0
+        };
         let action = self
             .band
             .show(ui, rect, &response, &self.view, self.selected);
+        // A middle-button drag on the band tunes the radio.
+        let by = std::mem::take(&mut self.band.tune_by);
+        if by != 0.0 {
+            self.set_centre((self.center_hz() + by).round());
+        }
         match action {
             band::Action::Select(id) => {
                 self.selected = Some(id);
@@ -1676,6 +1814,15 @@ impl eframe::App for App {
         };
         egui::Panel::top("top").frame(plain(PANEL)).show(ui, |ui| {
             self.top_bar(ui);
+            // The server's own copy of its controls replaces ours, but not
+            // under a slider that is being dragged.
+            if self.view.menu_seq != self.menu_seq && !ui.input(|i| i.pointer.any_down()) {
+                self.menu.clone_from(&self.view.menu);
+                self.menu_seq = self.view.menu_seq;
+            }
+            if !self.menu.is_empty() {
+                self.server_bar(ui);
+            }
             if self.radio_control.is_some() || self.radio_arg {
                 self.gain_bar(ui);
             }
@@ -1713,6 +1860,7 @@ fn main() -> eframe::Result {
     let mut fast = false;
     let mut shot_path = None;
     let mut after = 8.0;
+    let mut step = None;
     let mut select_hz = None;
     let mut view_arg: Option<(f64, f64)> = None;
     let mut out_dir = None;
@@ -1734,6 +1882,12 @@ fn main() -> eframe::Result {
             "--fast" => fast = true,
             "--screenshot" => shot_path = args.next().map(PathBuf::from),
             "--after" => after = args.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
+            "--step" => {
+                step = args.next().and_then(|v| {
+                    let (at, by) = v.split_once(':')?;
+                    Some((at.parse().ok()?, by.parse().ok()?))
+                })
+            }
             "--select" => select_hz = args.next().and_then(|v| v.parse().ok()),
             "--view" => {
                 view_arg = args.next().and_then(|v| {
@@ -1828,6 +1982,7 @@ fn main() -> eframe::Result {
                     path,
                     after,
                     requested: None,
+                    step,
                     frames: (0, 0.0, 0.0, 0),
                 }),
                 started: Instant::now(),
@@ -1849,6 +2004,8 @@ fn main() -> eframe::Result {
                 radio_gains: Vec::new(),
                 radio_bias: bias_arg,
                 radio_control: None,
+                menu: Vec::new(),
+                menu_seq: 0,
                 radio_arg: radio_key.is_some(),
                 live: false,
                 prefs: prefs::Prefs::default(),

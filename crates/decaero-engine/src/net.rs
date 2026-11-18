@@ -32,6 +32,7 @@ pub mod sdrpp {
     pub const PACKET_BASEBAND: u32 = 2;
     pub const PACKET_BASEBAND_COMPRESSED: u32 = 3;
     pub const COMMAND_GET_UI: u32 = 0x00;
+    pub const COMMAND_UI_ACTION: u32 = 0x01;
     pub const COMMAND_START: u32 = 0x02;
     pub const COMMAND_STOP: u32 = 0x03;
     pub const COMMAND_SET_FREQUENCY: u32 = 0x04;
@@ -116,6 +117,8 @@ struct Link {
     dropped: AtomicU64,
     /// Set when the far end went away, with why.
     failure: Mutex<Option<String>>,
+    /// An SDR++ server's menu, and how many times it has been sent.
+    menu: Mutex<(u64, Vec<crate::smgui::Widget>)>,
 }
 
 /// The engine's side of any network input.
@@ -179,6 +182,19 @@ impl Source for NetSource {
     fn tune(&mut self, center_hz: f64) {
         if let Some(c) = &mut self.control {
             let _ = send_command(c, sdrpp::COMMAND_SET_FREQUENCY, &center_hz.to_le_bytes());
+        }
+    }
+    fn menu(&self, seen: u64) -> Option<(u64, Vec<crate::smgui::Widget>)> {
+        let menu = self.link.menu.lock().unwrap();
+        (menu.0 != seen).then(|| menu.clone())
+    }
+    fn menu_action(&mut self, id: &str, value: &crate::smgui::Value) {
+        if let Some(c) = &mut self.control {
+            let _ = send_command(
+                c,
+                sdrpp::COMMAND_UI_ACTION,
+                &crate::smgui::action(id, value),
+            );
         }
     }
 }
@@ -326,6 +342,8 @@ pub fn open_sdrpp(host: &str, options: SdrppOptions) -> Result<NetSource> {
         )?;
     }
     send_command(&mut stream, sdrpp::COMMAND_START, &[])?;
+    // The menu again, as it is with the radio running.
+    send_command(&mut stream, sdrpp::COMMAND_GET_UI, &[])?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
     let (tx, rx) = std::sync::mpsc::sync_channel(64);
@@ -333,6 +351,7 @@ pub fn open_sdrpp(host: &str, options: SdrppOptions) -> Result<NetSource> {
         stop: AtomicBool::new(false),
         dropped: AtomicU64::new(0),
         failure: Mutex::new(None),
+        menu: Mutex::new((0, Vec::new())),
     });
     let mut reader = stream.try_clone()?;
     let shared = link.clone();
@@ -353,6 +372,17 @@ pub fn open_sdrpp(host: &str, options: SdrppOptions) -> Result<NetSource> {
             let decoded = match kind {
                 sdrpp::PACKET_BASEBAND => baseband(&body, &mut block),
                 sdrpp::PACKET_BASEBAND_COMPRESSED => unzstd(&body).and_then(|plain| baseband(&plain, &mut block)),
+                // The answer to a menu request or a menu action is the menu.
+                sdrpp::PACKET_COMMAND_ACK if body.len() >= 4 => {
+                    let command = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+                    if (command == sdrpp::COMMAND_GET_UI || command == sdrpp::COMMAND_UI_ACTION)
+                        && let Some(widgets) = crate::smgui::parse(&body[4..])
+                    {
+                        let mut menu = shared.menu.lock().unwrap();
+                        *menu = (menu.0 + 1, widgets);
+                    }
+                    Ok(())
+                }
                 sdrpp::PACKET_COMMAND if body.len() >= 4 => {
                     match u32::from_le_bytes([body[0], body[1], body[2], body[3]]) {
                         sdrpp::COMMAND_DISCONNECT => {
@@ -402,6 +432,7 @@ pub fn open_raw(url: &str, rate: f64, format: Format) -> Result<NetSource> {
         stop: AtomicBool::new(false),
         dropped: AtomicU64::new(0),
         failure: Mutex::new(None),
+        menu: Mutex::new((0, Vec::new())),
     });
     let shared = link.clone();
     let pair = format.pair_bytes();

@@ -147,8 +147,13 @@ Square, redrawn at 60 frames a second, small dots.
    (`sdrpp://HOST[:5259]`, 16 or 8 bit, zstd, retuned from the centre box) and
    plain I/Q over `tcp://`, `listen://`, `udp://`. **Done** against a stand-in
    server (`--example net_send -- FILE.wav sdrpp://127.0.0.1:5259`) built from
-   SDR++'s source; not yet tried against a real SDR++ server. The server's
-   radio is chosen in SDR++ itself (its remote menu is not shown here).
+   SDR++'s source; tried against a real SDR++ server (an Airspy,
+   2026-11-18): samples, retuning and the remote menu work. The server's
+   controls for its radio are shown in a row under the top bar: SDR++'s
+   `SmGui` draw list is read into widgets (`decaero-engine/src/smgui.rs`), a
+   change goes back as a `COMMAND_UI_ACTION` asking for the menu in return,
+   and layout steps and pop-ups are left out
+   (`--example sdrpp_menu -- sdrpp://HOST:PORT [--set ID VALUE]` prints it).
 
 10. The same radios as DecSAT (`decaero-radio`): HackRF, Airspy, ADALM-PLUTO,
     SDRplay, Fobos, RTL-SDR and UHD through DecSAT's own drivers (`decsat-io`
@@ -255,6 +260,18 @@ radio its rate and gains (`rate.KEY`, `gain.KEY.STAGE`) and the bias-T choice.
   and one that still covers the view is kept.
 - Unattended: `--view LO_HZ:HI_HZ` sets the view, and a `--screenshot` run
   prints the mean and longest frame times.
+
+### Tuning
+
+The centre frequency is DecSAT's big digits (`freq_display.rs`). On a live
+input a middle-button drag on the band tunes too. Every waterfall row keeps
+the tuning it was taken at and is drawn moved along by the difference, so a
+retune shifts the history instead of clearing it; where an old row does not
+reach, the picture is dark. For about half a second after a retune the rows
+are of samples still on their way from the radio at the old tuning, and sit
+in the wrong place. A retune of 100 Hz or more on a live input stops the
+decoders (the carriers have all moved) and the scan starts them again.
+`--step SECS:HZ` with `--screenshot` tries a retune unattended.
 
 ## Activity history and call log
 

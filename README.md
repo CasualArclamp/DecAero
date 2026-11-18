@@ -43,6 +43,10 @@ written in Rust. Receive only.
 ![Zoomed in on a 1200 bit/s carrier](docs/pictures/zoom.png)
 
 - Spectrum and waterfall at 60 rows a second, drawn pixel for pixel.
+- Big tuning digits for the centre frequency: scroll or click a digit to
+  step it, right-click to zero it and those after it. On a live input,
+  dragging the band with the middle button tunes the radio, and the
+  waterfall's history moves along with it.
 - The wheel zooms about the cursor and right-drag pans. As you zoom in the
   FFT gets finer, down to 1 Hz bins, and what is already on screen stays.
 
@@ -64,7 +68,9 @@ written in Rust. Receive only.
 
 **Inputs**
 - A recording (WAV, I/Q or a receiver's audio output).
-- An SDR++ server, or plain I/Q over TCP or UDP.
+- An SDR++ server, tuned from here, with the server's own controls for its
+  radio (sample rate, gain, bias-T) shown under the top bar. Or plain I/Q
+  over TCP or UDP.
 - A radio directly: HackRF, Airspy / HydraSDR, ADALM-PLUTO, SDRplay, Fobos,
   RTL-SDR or USRP, with gain controls and bias-T (off unless you turn it on).
 

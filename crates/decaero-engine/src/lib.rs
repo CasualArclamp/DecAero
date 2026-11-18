@@ -12,6 +12,7 @@ pub mod channel;
 pub mod feed;
 pub mod net;
 pub mod scanner;
+pub mod smgui;
 pub mod survey;
 pub mod zoom;
 
@@ -47,6 +48,13 @@ pub trait Source: Send {
     }
     /// Tune a radio to a new centre frequency (nothing for a recording).
     fn tune(&mut self, _center_hz: f64) {}
+    /// The controls a server hands out for its radio (an SDR++ server's
+    /// menu), if they are not the ones numbered `seen`: (number, controls).
+    fn menu(&self, _seen: u64) -> Option<(u64, Vec<smgui::Widget>)> {
+        None
+    }
+    /// One of those controls was changed.
+    fn menu_action(&mut self, _id: &str, _value: &smgui::Value) {}
 }
 
 /// A recording played from memory.
@@ -187,6 +195,12 @@ pub struct View {
     pub listening: Option<ChannelId>,
     /// The input is one real signal: only the upper half of the band counts.
     pub real: bool,
+    /// A radio or a network input, which can be tuned (a recording cannot).
+    pub live: bool,
+    /// The radio's controls as an SDR++ server hands them out, numbered so
+    /// a change is seen.
+    pub menu: Vec<smgui::Widget>,
+    pub menu_seq: u64,
     /// How the feeds out are doing.
     pub feeds: feed::FeedCounts,
     /// The averaged spectrum again, finer, for the part of the band on
@@ -215,6 +229,11 @@ pub enum Command {
     Follow(bool),
     Pause(bool),
     SetCenter(f64),
+    /// A control of the server's menu was changed.
+    Menu {
+        id: String,
+        value: smgui::Value,
+    },
     /// Change where the feeds go.
     Feeds(feed::FeedOptions),
     /// What the window shows: this part of the band (Hz from the centre)
@@ -262,6 +281,7 @@ impl Engine {
                 source: source.describe(),
                 rate: source.rate(),
                 center_hz: options.center_hz,
+                live: source.live(),
                 ..View::default()
             }),
             rows: Mutex::new(VecDeque::new()),
@@ -472,8 +492,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             .ok()
     };
 
+    let mut menu_seen = 0;
     while !shared.stop.load(Ordering::Relaxed) {
         // Commands from the GUI.
+        let mut retune = None;
         for c in std::mem::take(&mut *shared.commands.lock().unwrap()) {
             match c {
                 Command::Add {
@@ -528,11 +550,33 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     hi_hz,
                     pixels,
                 } => shown = Some((lo_hz, hi_hz, pixels.max(1))),
-                Command::SetCenter(hz) => {
-                    options.center_hz = hz;
-                    source.tune(hz);
-                }
+                Command::SetCenter(hz) => retune = Some(hz),
+                Command::Menu { id, value } => source.menu_action(&id, &value),
             }
+        }
+        // The last of them only: a drag sends many.
+        if let Some(hz) = retune {
+            let moved = hz - options.center_hz;
+            options.center_hz = hz;
+            source.tune(hz);
+            // A live input has really moved, and every carrier with it: the
+            // decoders are stopped (the scan finds what is in the band now)
+            // and the averaged spectrum starts again.
+            if source.live() && moved.abs() >= 100.0 {
+                for w in &workers {
+                    w.stop.store(true, Ordering::Relaxed);
+                    deleted_ids.push(w.id);
+                }
+                deleted.clear();
+                rejected.clear();
+                scan_rejected.clear();
+                have_average = false;
+            }
+        }
+        if let Some((seq, menu)) = source.menu(menu_seen) {
+            menu_seen = seq;
+            let mut v = shared.view.lock().unwrap();
+            (v.menu, v.menu_seq) = (menu, seq);
         }
         if paused {
             shared.view.lock().unwrap().paused = true;

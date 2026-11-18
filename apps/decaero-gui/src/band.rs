@@ -46,7 +46,7 @@ pub enum Action {
 pub struct Band {
     /// History at full resolution, newest first, each with the noise floor
     /// it was taken at: zooming in redraws from these, so it stays sharp.
-    rows: VecDeque<(f32, Row)>,
+    rows: VecDeque<(f32, Row, f64)>,
     /// Columns of the texture (one a screen pixel, so nothing is resampled)
     /// and rows on screen.
     size: [usize; 2],
@@ -78,6 +78,14 @@ pub struct Band {
     /// What is on screen (Hz from the centre, and screen pixels across),
     /// for the engine: it makes a finer spectrum of it when zoomed in.
     pub shown: Option<(f64, f64, usize)>,
+    /// Where a live input is tuned, Hz (0 for a recording). Each row keeps
+    /// the tuning it was taken at, so after a retune the history is drawn
+    /// moved along to where its frequencies now are.
+    pub tuned: f64,
+    drawn_tuned: f64,
+    /// Hz to move the tuning by, from a middle-button drag: for the caller
+    /// to take and act on.
+    pub tune_by: f64,
 }
 
 /// How one column of the picture is read from a row of bins.
@@ -173,6 +181,9 @@ impl Band {
             drag_from: None,
             want_view: None,
             shown: None,
+            tuned: 0.0,
+            drawn_tuned: 0.0,
+            tune_by: 0.0,
         }
     }
 
@@ -182,9 +193,10 @@ impl Band {
         self.dirty = true;
     }
 
-    pub fn push_rows(&mut self, rows: impl Iterator<Item = Row>, floor_db: f32) {
+    /// New rows, taken with the input tuned to `tuned_hz` (0 for a recording).
+    pub fn push_rows(&mut self, rows: impl Iterator<Item = Row>, floor_db: f32, tuned_hz: f64) {
         for row in rows.filter(|r| !r.db.is_empty()) {
-            self.rows.push_front((floor_db, row));
+            self.rows.push_front((floor_db, row, tuned_hz));
             self.fresh += 1;
             self.waiting += 1.0;
             self.counted.0 += 1.0;
@@ -205,13 +217,18 @@ impl Band {
         let mut pixels = vec![DARK; cols * count];
         // Rows are all one length, so the columns are worked out once.
         let mut planned: Vec<Column> = Vec::new();
-        let mut planned_for = 0;
+        let mut planned_for = (0, 0.0);
         let mut mixed: Vec<f32> = Vec::new();
         // The same for the finer rows, which change shape as the zoom does.
         let mut fine: Vec<Option<Column>> = Vec::new();
         let mut fine_for = (0.0, 0.0, 0);
-        for (r, (line, (floor, both))) in pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate()
+        for (r, (line, (floor, both, at))) in
+            pixels.chunks_exact_mut(cols).zip(&self.rows).enumerate()
         {
+            // A row from before a retune sits `shift` Hz along from where it
+            // was taken: the view is moved the other way to read it.
+            let shift = at - self.tuned;
+            let (from, to) = (from - shift / self.span, to - shift / self.span);
             let row = &both.db;
             let n = row.len();
             // A finer row made while zoomed in is laid over the band's own
@@ -219,16 +236,16 @@ impl Band {
             // moved) is drawn from the band's own, so nothing ever blanks.
             let zoom = both.zoom.as_ref();
             if let Some(z) = zoom {
-                let key = (z.lo_hz, z.step_hz, z.db.len());
+                let key = (z.lo_hz + shift, z.step_hz, z.db.len());
                 if key != fine_for || fine.len() != cols {
-                    fine = overlay(z, cols, self.lo, self.hi);
+                    fine = overlay(z, cols, self.lo - shift, self.hi - shift);
                     fine_for = key;
                 }
             }
             let whole = zoom.is_some() && fine.iter().all(Option::is_some);
-            if n != planned_for {
+            if (n, shift) != planned_for {
                 planned = plan(n, cols, from, to);
-                planned_for = n;
+                planned_for = (n, shift);
             }
             // Zoomed in, a bin is many pixels wide but a row is still one
             // high, and every bin of every row is its own draw of the noise:
@@ -237,14 +254,16 @@ impl Band {
             let bin_px = cols as f64 / ((to - from) * n as f64);
             let mix = ((bin_px / 4.0 / self.thick as f64).round() as usize).clamp(1, 12);
             let row = if mix > 1 && !whole {
-                let a = ((from * n as f64) as usize).saturating_sub(1);
-                let b = (((to * n as f64).ceil() as usize) + 1).min(n);
+                let b = (((to * n as f64).ceil().max(0.0) as usize) + 1).min(n);
+                let a = ((from * n as f64).max(0.0) as usize)
+                    .saturating_sub(1)
+                    .min(b);
                 mixed.clear();
                 mixed.resize(n, 0.0);
                 let mut used = 0.0;
-                for (_, older) in self.rows.iter().skip(r).take(mix) {
+                for (_, older, older_at) in self.rows.iter().skip(r).take(mix) {
                     let older = &older.db;
-                    if older.len() == n {
+                    if older.len() == n && older_at == at {
                         for (m, v) in mixed[a..b].iter_mut().zip(&older[a..b]) {
                             *m += v;
                         }
@@ -252,7 +271,7 @@ impl Band {
                     }
                 }
                 for m in &mut mixed[a..b] {
-                    *m /= used;
+                    *m /= f32::max(used, 1.0);
                 }
                 &mixed
             } else {
@@ -261,6 +280,14 @@ impl Band {
             // From a little under the floor to 22 dB over it.
             let (lo, scale) = (floor - 3.0, 255.0 / 25.0);
             for (c, (px, column)) in line.iter_mut().zip(&planned).enumerate() {
+                // A moved row does not reach all the way across: the rest
+                // stays dark.
+                if shift != 0.0 {
+                    let middle = from + (to - from) * (c as f64 + 0.5) / cols as f64;
+                    if !(0.0..1.0).contains(&middle) {
+                        continue;
+                    }
+                }
                 let db = match zoom {
                     Some(z) => match fine[c] {
                         Some(f) => read(&z.db, f),
@@ -348,6 +375,10 @@ impl Band {
             }
             self.dirty = true;
         }
+        if self.tuned != self.drawn_tuned {
+            self.drawn_tuned = self.tuned;
+            self.dirty = true;
+        }
         // Everything sits on whole screen pixels (the window may be scaled:
         // `ppp` screen pixels to one of egui's points).
         let ppp = ui.ctx().pixels_per_point();
@@ -377,8 +408,13 @@ impl Band {
                 self.dirty = true;
             }
         }
-        // Pan: the spectrum follows the mouse.
-        if response.dragged_by(PointerButton::Secondary)
+        // The middle button tunes a live input: the band follows the mouse
+        // and the radio is moved to suit. (A recording has no tuning, so
+        // there it pans like the right button.)
+        if view.live && response.dragged_by(PointerButton::Middle) {
+            self.tune_by -= f64::from(response.drag_delta().x / rect.width()) * (hi - lo);
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        } else if response.dragged_by(PointerButton::Secondary)
             || response.dragged_by(PointerButton::Middle)
         {
             let d = f64::from(response.drag_delta().x / rect.width()) * (hi - lo);
@@ -756,6 +792,7 @@ mod tests {
                         zoom: None,
                     }),
                     0.0,
+                    0.0,
                 );
                 came += 3.0;
             }
@@ -791,6 +828,34 @@ mod tests {
         let over = overlay(&zoom, 100, 150.0, 160.0);
         let v = read(&zoom.db, over[50].unwrap());
         assert!((v - 55.05).abs() < 1e-3, "{v}");
+    }
+
+    #[test]
+    fn history_moves_along_after_a_retune() {
+        // 64 bins over 64 kHz, one column a bin. One bright bin, 10 kHz up.
+        let mut band = Band::new();
+        (band.span, band.lo, band.hi) = (64_000.0, -32_000.0, 32_000.0);
+        band.size = [64, 4];
+        let mut db = vec![0.0; 64];
+        db[42] = 30.0;
+        let row = Row { db, zoom: None };
+        band.push_rows(std::iter::once(row.clone()), 0.0, 1_545_000_000.0);
+        // Retuned 5 kHz up: the same carrier is now 5 kHz above the centre,
+        // in the new row and in the old one alike.
+        band.tuned = 1_545_005_000.0;
+        let mut db = vec![0.0; 64];
+        db[37] = 30.0;
+        band.push_rows(std::iter::once(Row { db, zoom: None }), 0.0, band.tuned);
+        let pixels = band.render(2);
+        let bright = |line: &[Color32]| {
+            let top = band.palette[255];
+            line.iter().position(|p| *p == top)
+        };
+        assert_eq!(bright(&pixels[..64]), Some(37));
+        assert_eq!(bright(&pixels[64..]), Some(37));
+        // The old row ends 5 kHz short of the top of the band now.
+        assert!(pixels[64 + 59..].iter().all(|p| *p == DARK));
+        assert!(pixels[64 + 58] != DARK);
     }
 
     #[test]
