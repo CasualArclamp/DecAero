@@ -331,79 +331,58 @@ progress shown as for 8400, its call in the calls table. Follow tries both
 voice rates on an assigned channel; a box dragged wider than 12 kHz does too.
 The deep scan does not look for it.
 
-The voice frames are saved as they come, 24 octets each and 50 a second, in a
-`21k` folder beside the calls (`voice21k_UNIXTIME_OFFSET.bin`), for working on.
+### The 9.6 kbit/s speech codec (2026-11-19)
 
-### The 9.6 kbit/s speech codec: what is known (2026-11-19)
+Decoded: `decaero-core/src/mplpc.rs`. The codec is British Telecom's
+Skyphone codec, multipulse-excited LPC, and its whole definition is public
+after all: ICAO Annex 10, Volume III, Part I, Appendix 7 to Chapter 4,
+"Voice encoding algorithm definition" (first edition as amended to
+Amendment 80, printed pages 198 to 217; the 2007 second edition dropped
+it). Encoder and decoder in Pascal, every table. Found by Rory's asking for
+a search, after a night of guessing at the bits had got as far as
+"syllables".
 
-The speech is not decoded to anything one can follow yet. The codec is
-British Telecom's Skyphone codec, multipulse-excited LPC. Its designers'
-paper (Boyd, Southcott, Bolingbroke, "A speech coder for aeronautical
-telecommunications", Eurospeech 1989) gives the outline of the trial codec:
-10th order LPC sent as reflection coefficients every 20 ms, a single-tap
-long-term predictor every 20 ms, three pulses to an excitation block, error
-correction on the predictor bits only, and bits kept for spotting error
-bursts. It gives no bit order and no quantiser table, and nothing else
-public does. What follows was worked out from the one recorded call (116 s
-of frames, 5404 of 5825 passing the checks below). Bits are numbered from 0
-in the order they arrive in the 192-bit frame.
+The 192-bit frame, each field most significant bit first (table A7-17):
 
-**The call.** Its first half minute is not speech: loud, steady noise (an
-aircraft cabin, by the look of it). Speech-like stretches are 36 to 62 s and
-84 to 104 s; 78 to 83 s is silent, and there every predictor bit is fixed:
-an idle pattern.
+| bits | what |
+|---|---|
+| 6 6 5 5 4 4 3 3 2 2 | ten reflection coefficients (tables A7-2 to A7-11) |
+| 6 | (31,26) Hamming check on the upper bits of the first nine, and a parity bit |
+| 8 | burst check: column parities of those 32 bits in rows of eight, XOR 10101010 |
+| 2, 6 | pitch predictor: gain (0.1, 0.325, 0.6, 0.9), delay (32 + code samples) |
+| 5 x 26 | five 4 ms blocks of three pulses: place 5, size 4; place 5, size 4; place 5, size 3 |
 
-**Bits 0 to 55: predictor and protection.**
+The decoder is short: the pulses, through a one-tap pitch predictor,
+through a tenth-order all-pole filter, with no post-filter and nothing
+smoothed between frames. A pulse's size is a sign and a level relative to a
+step size that follows the levels already sent (so there is no loudness
+field). Bad frames: one wrong bit among the protected ones is put right;
+past that the frame before is played again, and then silence (figure A7-2).
 
-* Twelve parity relations hold over GF(2) (listed in `scripts/c21_render.py`):
-  eleven each end in a check bit (42 to 47, 51 to 55), one ties bits 40 and
-  41 to bits 6, 7, 14, 15, 17, 20, 35 and 37 (the burst detection). The data
-  bits they cover are 0-7, 9-11, 13-17, 20-22, 24-25, 28-29, 35 and 37-38:
-  the upper bits of each field below, which is how the fields' edges are
-  known. Bits 48 to 50 are in no relation.
-* Fields, least significant bit first: 0-1, 2-7, 8-11, 12-17, 18-22, 23-25,
-  26-29, 30-33, 34-35, 36-38, and bit 39.
-* 12-17 is taken to be the long-term predictor's lag and 0-1 its gain: in
-  steady noise 12-17 wanders over a sixth of its range from frame to frame
-  while every other field holds within a tenth, as a pitch lag would, and it
-  moves with 0-1.
-* The rest are taken as reflection coefficients. 2-7 is the first (in the
-  idle pattern it sits at its top code, and rising codes mean a more
-  low-pass sound). The best guess for the others is by width: 18-22 the
-  second, then 8-11, 26-29, 30-33, 23-25, 36-38 and 34-35, eight in all.
-  Whether there are ten, and where the other two would be, is not known.
+What the appendix leaves open, settled on the recorded call:
 
-**Bits 56 to 191: the excitation.** Eighteen pulses, each a 3-bit level and
-a place, most significant bit first, in six groups of three laid out as
-level, 5-bit place, level, 4-bit place, level, 4-bit place (22 bits):
-groups at bits 58, 80, 118, 140 and 162, and one split between 184-191 and
-102-116 (with a 5-bit place where the others have 4). In the silent stretch
-every level reads 1 and the places are random, which is what told levels
-from places. Bits 56, 57 and 117 are unplaced. Not known: how a place maps
-to a sample, the pulses' signs, the scale of the levels, and the order of
-the groups in time. (Eighteen pulses is not the paper's fifteen: the
-standard seems to differ from the trial codec.)
+* The coefficient tables are sines of evenly spaced angles, each output
+  level the midpoint of two; the module makes them that way and a test
+  holds them to printed values.
+* The 26 protected bits go into the Hamming word and the matrix in the
+  order of table A7-18, coefficient 1's top bit first, row by row.
+* The sixth Hamming bit makes the number of ones in the 32 bits even
+  (the text says "odd-parity").
+* In `c21frame`'s octets the first bit sent is the top bit.
 
-**How guesses were judged.** By a speech recogniser (Whisper, on the
-graphics card), not by ear: a guess is turned into sound and scored by how
-sure the recogniser is that it hears speech. Tried on real speech put
-through the same kind of crude resynthesis, it tells right from wrong when
-the pulses and most of the filter are right, and is no use on hiss-driven
-sound or on small changes. It prefers the assignment above with the first
-four coefficients' codes running against the coefficient (probability of
-"no speech" about 0.25 on the speech stretches, against 0.07 to 0.15 for
-real speech treated alike, and 0.6 and up for wrong guesses), and keeps
-hearing the same shape of sentence in one stretch whatever the details. It
-cannot tell the later coefficients' order or signs, the pitch predictor's
-settings or the pulse details apart: that is as far as it goes.
+Check: of the call's 5825 frames 5416 pass every check; the rest are two
+fades of about two seconds and scattered single frames. The sound is clear
+speech, and a speech recogniser writes down the conversation. A Python copy
+of the decoder, `scripts/c21_render.py`, agrees with the Rust one sample for
+sample on the clean stretches. `decaero-core --example mplpc_wav` turns
+saved frames into a WAV; the headless example's `--raw-voice DIR` saves a
+recording's frames (24 octets each, 50 a second).
 
-**Tools.** `scripts/c21_render.py` turns a saved `voice21k_*.bin` into a WAV
-with the present best guess (`scripts/c21_tables.json`: quantiser tables
-made by matching how often each code occurs to how real speech's
-coefficients spread; a guess, not the codec's tables). `c21_trials.py` and
-`c21_match.py` are the earlier attempts (hiss-driven trials; matching the
-fields to real speech by rank correlation, which was not decisive). The
-headless example takes `--raw-voice DIR` to save a recording's voice frames.
+In the engine a 21000 bit/s channel's sound goes the way of the 8400
+channel's: to the loudspeaker when listened to, and to the call's recording.
+
+Not done: the "TIF" frames that carry fax and modem data in place of speech
+(ARINC 741), and the squelch from the demodulator into the decoder.
 
 ### Tuning
 

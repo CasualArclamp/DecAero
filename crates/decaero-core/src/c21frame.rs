@@ -18,8 +18,8 @@
 //! speech at 9600 bit/s). The first 24 groups of signalling bits are three
 //! 12-octet signal units; the 25th was always zero.
 //!
-//! The speech codec is not known: the voice frames are handed out as they
-//! are.
+//! The voice frames are handed out as they are; `mplpc` turns them into
+//! sound.
 
 use crate::cframe::CStats;
 use crate::fec::{self, Encoder, Viterbi};

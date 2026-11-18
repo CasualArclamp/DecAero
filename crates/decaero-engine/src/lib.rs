@@ -125,7 +125,7 @@ pub struct Options {
     /// Follow only inside this part of the band (Hz from the centre).
     pub follow_range: Option<(f64, f64)>,
     /// Where the voice frames of 21000 bit/s calls are written as they come
-    /// (their codec is not known), a file a call; nowhere if `None`.
+    /// (before the speech decoder), a file a call; nowhere if `None`.
     pub raw_voice_dir: Option<std::path::PathBuf>,
     /// dB over the floor a carrier must reach to be given a decoder.
     pub carrier_db: f32,

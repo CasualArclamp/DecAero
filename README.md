@@ -21,9 +21,10 @@ written in Rust. Receive only.
 - R and T channel bursts (aircraft to ground), with ADS-C position reports
   read out of the ACARS they carry.
 - C channel voice at 8400 bit/s, decoded to sound.
-- The older C channel at 21000 bit/s: its frames and signalling (who is
-  calling, call progress) are decoded; its 9.6 kbit/s speech is not, as the
-  codec is not publicly described. The voice frames are saved for later.
+- The older C channel at 21000 bit/s, with its 9.6 kbit/s speech (British
+  Telecom's multipulse LPC, from its definition in ICAO Annex 10), decoded
+  to sound. Drag across the carrier to add it: the scan does not look for
+  this rate yet.
 - A scan of the whole band finds the carriers and starts a decoder on each;
   you can also drag across a carrier to add one, and it names the mode itself.
 - A decoder that loses its carrier finds it again on its own.

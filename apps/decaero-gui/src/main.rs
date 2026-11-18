@@ -236,9 +236,6 @@ impl App {
                 // Not while the range is still to be dragged.
                 follow: self.follow && !self.follow_pick,
                 follow_range: self.follow_range,
-                // Beside the calls: the voice frames of 21000 bit/s calls, whose
-                // codec is not known, kept for working it out.
-                raw_voice_dir: self.recorder.as_ref().map(|r| r.dir().join("21k")),
                 feeds: self.feeds.clone(),
                 ..Options::default()
             },
@@ -1335,7 +1332,7 @@ impl App {
                     (
                         "Codec",
                         if c.wide {
-                            "9.6k, not known: no sound, frames saved".to_string()
+                            "MP-LPC 9.6k".to_string()
                         } else {
                             "AMBE 4.8k".to_string()
                         },

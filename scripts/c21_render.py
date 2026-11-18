@@ -1,129 +1,139 @@
 # made by CasualArclamp
-"""Sound from a 21000 bit/s call's saved voice frames: the best guess so far.
+"""Speech from a 21000 bit/s call's saved voice frames.
 
-The 9.6 kbit/s codec (British Telecom's multipulse LPC) has no public
-description of its bits. What is used here was worked out from one recorded
-call (docs/DESIGN.md): which bits are the predictor's coefficients, the pitch
-predictor and the pulses, with quantiser tables that are guesses
-(scripts/c21_tables.json). Expect a voice-like sound, not clear speech.
+The 9.6 kbit/s codec is British Telecom's multipulse LPC, defined in ICAO
+Annex 10 Volume III Part I, Appendix 7 to Chapter 4 ("Voice encoding
+algorithm definition", first edition as amended to Amendment 80). This is
+that decoder in Python, as a check on the Rust one (crates/decaero-core,
+`mplpc`): tables A7-2 to A7-17 and the decoder of section 5.
 
-    python scripts/c21_render.py voice21k_XXXX.bin OUT.wav [hiss|pulses|pitch]
+    python scripts/c21_render.py voice21k_XXXX.bin OUT.wav
 
 The input is what DecAero saves in the `21k` folder beside the calls: 24
-octets a frame, 50 frames a second. `pitch` (pulses and the pitch predictor)
-is the default; `pulses` leaves the pitch predictor out; `hiss` drives the
-filter with noise shaped by the pulses' loudness.
+octets a frame, 50 frames a second, the first bit sent in each octet's top
+bit.
 """
-import json
-import os
 import sys
 import wave
 
 import numpy as np
 
-try:
-    from numba import njit
-except ImportError:  # slower, but it works
-    def njit(*_args, **_kwargs):
-        return lambda f: f
-
-RATE = 8000
-FRAME = 160
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def field(bits, first, width, msb_first=False):
-    weights = 1 << (np.arange(width - 1, -1, -1) if msb_first else np.arange(width))
-    return (bits[:, first:first + width] @ weights).astype(np.int64)
-
-
-def checks_pass(bits):
-    """Frames whose protected predictor bits agree with their check bits.
-
-    The twelve parity relations found in the first 56 bits: each row lists
-    the bits whose sum must be even (the last row, odd).
-    """
-    rows = [
-        [1, 3, 4, 7, 9, 11, 13, 14, 15, 21, 25, 29, 38, 40, 42],
-        [1, 2, 4, 5, 7, 9, 10, 13, 14, 17, 20, 25, 28, 35, 37, 43],
-        [0, 4, 5, 13, 15, 20, 21, 22, 24, 37, 38, 40, 44],
-        [0, 1, 2, 3, 13, 14, 15, 16, 24, 25, 28, 29, 35, 37, 38, 45],
-        [6, 9, 10, 11, 14, 16, 20, 21, 22, 24, 25, 28, 29, 37, 38, 40, 46],
-        [0, 2, 3, 5, 6, 7, 10, 11, 13, 16, 17, 22, 25, 37, 38, 47],
-        [2, 4, 5, 9, 10, 13, 14, 15, 17, 22, 24, 25, 28, 35, 41, 51],
-        [0, 2, 4, 5, 6, 9, 13, 14, 15, 17, 20, 21, 22, 24, 25, 35, 37, 38, 52],
-        [0, 1, 2, 7, 10, 13, 14, 16, 20, 24, 25, 29, 35, 38, 41, 53],
-        [4, 6, 9, 10, 14, 16, 20, 21, 22, 24, 25, 28, 37, 38, 40, 54],
-        [0, 2, 3, 6, 10, 11, 15, 17, 20, 22, 25, 38, 41, 55],
-    ]
-    good = np.ones(len(bits), dtype=bool)
-    for row in rows:
-        good &= bits[:, row].sum(1) % 2 == 0
-    good &= bits[:, [6, 7, 14, 15, 17, 20, 35, 37, 40, 41]].sum(1) % 2 == 1
-    return good
+# Table A7-1's decision levels are sines of evenly spaced angles; the output
+# levels (tables A7-2 to A7-11) are the midpoints of neighbouring decisions.
+# (lowest angle, highest angle, bits) for coefficients 1 to 10.
+RANGES = [(-0.85, 1.46, 6), (-1.32, 0.79, 6), (-0.67, 0.90, 5), (-1.08, 0.50, 5), (-0.61, 0.69, 4),
+          (-0.78, 0.36, 4), (-0.48, 0.67, 3), (-0.68, 0.48, 3), (-0.44, 0.81, 2), (-0.52, 0.44, 2)]
+LEVELS = []
+for lo, hi, width in RANGES:
+    edges = np.sin(lo + (hi - lo) * np.arange((1 << width) + 1) / (1 << width))
+    LEVELS.append((edges[:-1] + edges[1:]) / 2)
+# How many of each coefficient's top bits the Hamming code covers (table A7-18).
+PROTECTED = [6, 5, 3, 3, 2, 2, 2, 2, 1, 0]
+PITCH_GAIN = [0.1, 0.325, 0.6, 0.9]  # table A7-12
+INV_QUANT = {4: [0.1284, 0.3881, 0.6568, 0.9424, 1.256, 1.618, 2.069, 2.733],  # table A7-14
+             3: [0.2451, 0.7560, 1.344, 2.152]}  # table A7-15
+ADAPT = {4: [0.75, 0.875, 0.875, 0.875, 1.0, 1.25, 1.5, 2.0], 3: [0.875, 0.875, 1.0, 1.5]}
+ADJUST = [1.0, 1.0 / 0.625, 1.0 / 0.375]
 
 
-@njit(cache=True)
-def pitch_predictor(excitation, lag, gain):
-    out = excitation.copy()
-    for n in range(len(lag)):
-        for i in range(n * 160, (n + 1) * 160):
-            if i - lag[n] >= 0:
-                out[i] += gain[n] * out[i - lag[n]]
-    return out
+def number(bits):
+    v = 0
+    for b in bits:
+        v = v << 1 | int(b)
+    return v
 
 
-@njit(cache=True)
-def lattice(k_frames, excitation):
-    """An all-pole lattice filter, its coefficients moved once a frame."""
-    out = np.zeros(len(excitation))
-    state = np.zeros(10)
-    k_old = np.zeros(10)
-    for n in range(len(k_frames)):
-        for i in range(160):
-            mix = min(1.0, i / 40.0)
-            f = excitation[n * 160 + i]
-            for m in range(9, -1, -1):
-                k = k_old[m] + (k_frames[n, m] - k_old[m]) * mix
-                f -= k * state[m]
-                if m < 9:
-                    state[m + 1] = state[m] + k * f
-            state[0] = f
-            out[n * 160 + i] = f
-        k_old[:] = k_frames[n]
-    return out
+def split(frame):
+    """A frame's line codes, in the order of table A7-17."""
+    at = 0
+    def take(n):
+        nonlocal at
+        at += n
+        return frame[at - n:at]
+    k = [take(w) for _, _, w in RANGES]
+    hamming, burst = take(6), take(8)
+    gain, delay = number(take(2)), 32 + number(take(6))
+    pulses = []
+    for _ in range(5):
+        block = []
+        for width in (4, 4, 3):
+            place = number(take(5))
+            block.append((place, take(width), width))
+        pulses.append(block)
+    return k, hamming, burst, gain, delay, pulses
 
 
-def render(bits, tables, kind="pitch"):
-    n = len(bits)
-    good = checks_pass(bits)
-    # Predictor: a frame that fails its checks takes the one before it.
-    k = np.zeros((n, 10))
-    for t in tables["fields"]:
-        k[:, t["coefficient"] - 1] = np.array(t["values"])[field(bits, t["first_bit"], t["bits"])]
-    for i in range(1, n):
-        if not good[i]:
-            k[i] = k[i - 1]
-    # Pulses: six groups of three, each a level and a place. Signs are not
-    # known, so all are positive.
-    excitation = np.zeros(n * FRAME)
-    starts = [int(round(g * FRAME / 6)) for g in range(7)]
-    step_db = tables["pulses"]["step_db"]
-    for slot, group in enumerate(tables["pulses"]["groups"]):
-        a, b = starts[slot], starts[slot + 1]
-        for (level_at, level_bits), (place_at, place_bits) in group:
-            level = 10.0 ** (field(bits, level_at, level_bits, True) * step_db / 20.0)
-            place = field(bits, place_at, place_bits, True) * (1 if place_bits == 5 else 2)
-            np.add.at(excitation, np.arange(n) * FRAME + a + np.minimum(place, b - a - 1), level)
-    if kind == "hiss":
-        loud = np.sqrt((excitation.reshape(-1, FRAME) ** 2).mean(1))
-        excitation = np.random.default_rng(1).standard_normal(n * FRAME) * np.repeat(loud, FRAME)
-    elif kind == "pitch":
-        p = tables["pitch"]
-        lag = p["lag_offset"] + field(bits, p["lag_first_bit"], p["lag_bits"])
-        gain = np.array(p["gains"])[field(bits, p["gain_first_bit"], p["gain_bits"])]
-        excitation = pitch_predictor(excitation, lag, gain)
-    return lattice(np.clip(k, -0.98, 0.98), excitation)
+def checks(k, hamming, burst):
+    """(Hamming syndrome, parity fault, columns of the burst check that fail)."""
+    word = [b for bits, n in zip(k, PROTECTED) for b in bits[:n]]
+    ham, count, n = 0, 3, 4
+    for b in word:  # section 4.10.3.1
+        if b:
+            ham ^= count
+        count += 1
+        if count == n:
+            n *= 2
+            count += 1
+    syndrome = ham ^ number(hamming[1:])
+    parity = (sum(word) + sum(hamming)) % 2 == 1  # the sixth bit makes the code word even
+    matrix = np.array(list(word) + list(hamming) + [int(b) ^ m for b, m in zip(burst, [1, 0, 1, 0, 1, 0, 1, 0])])
+    columns = int((matrix.reshape(5, 8).sum(0) % 2).sum())
+    return syndrome, parity, columns
+
+
+class Decoder:
+    def __init__(self):
+        self.gfact = 1.0
+        self.maxadapt = False
+        self.s2 = np.zeros(96 + 160)  # the excitation's past, for the pitch predictor
+        self.out = np.zeros(10)  # the filter's past output, newest first
+        self.last = None
+
+    def amplitude(self, code, width, index):
+        """Section 5.1.3.3: the pulse's size, and the step size moved on."""
+        sign = -1.0 if code[0] else 1.0
+        i = number(code[1:])
+        top = (1 << (width - 1)) - 1
+        value = sign * INV_QUANT[width][i] * self.gfact / ADJUST[index]
+        self.gfact = self.gfact ** 0.98
+        if i == top:
+            if self.maxadapt:
+                self.gfact *= ADAPT[width][top]
+            self.maxadapt = True
+        else:
+            self.maxadapt = False
+        self.gfact = min(512.0, max(0.5, self.gfact * ADAPT[width][i]))
+        return value
+
+    def frame(self, bits):
+        k, hamming, burst, gain, delay, pulses = split(bits)
+        syndrome, parity, columns = checks(k, hamming, burst)
+        bad = columns > 1 or (syndrome != 0 and not parity)
+        if bad and self.last is not None:
+            k, gain, delay, pulses = self.last  # repeat the frame before
+        else:
+            self.last = (k, gain, delay, pulses)
+        refl = [LEVELS[i][number(k[i])] for i in range(10)]
+        taps = list(refl)  # section 4.6: reflection coefficients to filter taps
+        for i in range(1, 10):
+            alpha = taps[:i]
+            for j in range(i):
+                taps[j] = alpha[j] - taps[i] * alpha[i - 1 - j]
+        taps = np.array(taps)
+        out = np.zeros(160)
+        self.s2[:96] = self.s2[160:]
+        for block in range(5):
+            s1 = np.zeros(32)
+            for index, (place, code, width) in enumerate(pulses[block]):
+                s1[place] = self.amplitude(code, width, index)
+            for n in range(32):
+                at = 96 + block * 32 + n
+                self.s2[at] = PITCH_GAIN[gain] * self.s2[at - delay] + s1[n]
+                y = self.s2[at] + taps @ self.out
+                self.out[1:] = self.out[:-1]
+                self.out[0] = y
+                out[block * 32 + n] = y
+        return out, (syndrome, parity, columns)
 
 
 def main():
@@ -132,20 +142,22 @@ def main():
         return
     raw = np.fromfile(sys.argv[1], dtype=np.uint8)
     raw = raw[: len(raw) // 24 * 24].reshape(-1, 24)
-    bits = np.unpackbits(raw, axis=1, bitorder="little")
-    with open(os.path.join(HERE, "c21_tables.json")) as f:
-        tables = json.load(f)
-    kind = sys.argv[3] if len(sys.argv) > 3 else "pitch"
-    samples = render(bits, tables, kind)
-    # Level by the loud parts, with the silent frames left silent.
-    peak = np.percentile(np.abs(samples), 99.7) or 1.0
-    pcm = np.clip(samples / peak * 22000, -32767, 32767).astype(np.int16)
+    bits = np.unpackbits(raw, axis=1)
+    decoder = Decoder()
+    sound, clean = [], 0
+    for frame in bits:
+        samples, (syndrome, parity, columns) = decoder.frame(frame)
+        clean += syndrome == 0 and columns == 0 and not parity
+        sound.append(samples)
+    samples = np.concatenate(sound)
+    # The codec works on a 13-bit scale.
+    pcm = np.clip(samples * 8, -32767, 32767).astype(np.int16)
     with wave.open(sys.argv[2], "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(RATE)
+        w.setframerate(8000)
         w.writeframes(pcm.tobytes())
-    print(f"{len(bits)} frames, {len(bits) / 50:.0f} s, to {sys.argv[2]} ({kind})")
+    print(f"{len(bits)} frames ({clean} with every check good), {len(bits) / 50:.0f} s, to {sys.argv[2]}")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ mbelib (https://github.com/szechyjs/mbelib), ISC, (C) 2010 mbelib Author.
   OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
   PERFORMANCE OF THIS SOFTWARE.
 
+The 9.6 kbit/s speech decoder (crates/decaero-core/src/mplpc.rs) is written
+  from the algorithm's definition in ICAO Annex 10, Volume III, Part I,
+  Appendix 7 to Chapter 4 (the codec is British Telecom's). No code was taken.
+
 PATENT NOTICE (from mbelib): this source code is a written description of how
 certain voice decoding algorithms could be implemented. Executables built from
 it may be covered by patents; check before compiling or using it.

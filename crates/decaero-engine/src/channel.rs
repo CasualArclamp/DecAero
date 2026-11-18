@@ -11,6 +11,7 @@ use crate::feed::Link;
 use decaero_ambe::{Decoder as VoiceDecoder, FRAME_SAMPLES, FrameKind};
 use decaero_core::c21frame::{self, C21Decoder};
 use decaero_core::cframe::CDecoder;
+use decaero_core::mplpc;
 use decaero_core::pframe::{PDecoder, PFormat, SU_BYTES};
 use decaero_core::rtframe::{self, Burst, RReassembler};
 use decaero_core::su::{self, Acars, CAssignment, Meaning, Reassembler};
@@ -72,8 +73,7 @@ impl Kind {
 pub struct ChannelStatus {
     pub id: ChannelId,
     pub kind: Kind,
-    /// A C channel of the older kind: 21000 bit/s, 9.6 kbit/s speech (whose
-    /// codec is not known, so there is no sound).
+    /// A C channel of the older kind: 21000 bit/s, 9.6 kbit/s speech.
     pub wide: bool,
     /// Carrier offset from the centre of the input, in Hz (tracked).
     pub carrier_hz: f64,
@@ -201,7 +201,7 @@ pub enum Event {
     /// Decoded audio, 8 kHz, for the recorder and the loudspeaker.
     Voice { channel: ChannelId, pcm: Vec<i16> },
     /// Half a second of a 21000 bit/s call: its 25 voice frames as they
-    /// came (the codec is not known).
+    /// came, for whoever wants the bits.
     RawVoice {
         channel: ChannelId,
         frames: Vec<[u8; c21frame::VOICE_BYTES]>,
@@ -286,7 +286,10 @@ enum Chain {
         voice: VoiceDecoder,
     },
     /// The 21000 bit/s C channel.
-    C21 { decoder: C21Decoder },
+    C21 {
+        decoder: C21Decoder,
+        voice: Box<mplpc::Decoder>,
+    },
 }
 
 /// Catches R and T bursts on a channel that carries no continuous P signal.
@@ -588,6 +591,7 @@ fn start_chain(
         _ if bit_rate == 21_000 => (
             Chain::C21 {
                 decoder: C21Decoder::new(),
+                voice: Box::new(mplpc::Decoder::new()),
             },
             Kind::C,
             0.5,
@@ -745,7 +749,7 @@ fn process(
                 kind,
             )
         }
-        Chain::C21 { decoder } => {
+        Chain::C21 { decoder, voice } => {
             let mut out = Vec::new();
             decoder.push(soft, &mut out);
             for f in &out {
@@ -776,11 +780,20 @@ fn process(
                         name,
                     });
                 }
-                // A frame is taken as speech if it is not all one value
-                // (what an idle codec sends is not known either).
+                let mut pcm = Vec::with_capacity(f.voice.len() * mplpc::FRAME_SAMPLES);
                 for v in &f.voice {
-                    voice_kinds[if v.iter().all(|b| *b == v[0]) { 2 } else { 0 }] += 1;
+                    let mut samples = [0i16; mplpc::FRAME_SAMPLES];
+                    voice_kinds[match voice.decode(v, &mut samples) {
+                        mplpc::FrameKind::Voice => 0,
+                        mplpc::FrameKind::Repeat => 1,
+                        mplpc::FrameKind::Mute => 2,
+                    }] += 1;
+                    audio_peak = samples
+                        .iter()
+                        .fold(audio_peak, |m, &s| m.max(f32::from(s).abs() / 32768.0));
+                    pcm.extend_from_slice(&samples);
                 }
+                let _ = events.send(Event::Voice { channel: id, pcm });
                 let _ = events.send(Event::RawVoice {
                     channel: id,
                     frames: f.voice.to_vec(),
