@@ -360,6 +360,26 @@ step size that follows the levels already sent (so there is no loudness
 field). Bad frames: one wrong bit among the protected ones is put right;
 past that the frame before is played again, and then silence (figure A7-2).
 
+**The sound** *(2026-11-19, asked for by Rory: "a sharp lowpass at 4 kHz (or
+a proper resampler from 8k) for the 21k voice, or something else to make it
+sound better")*. Two things, neither heard by me (the before and after are
+in `out/plain.wav` and `out/post.wav` for him to judge):
+
+* The GUI's player brought 8 kHz up to the card's rate by linear
+  interpolation, which lets the images through (speech at 3 kHz comes out
+  again at 5 kHz only 13 dB down) and droops 2.7 dB at 3 kHz. It is now a
+  96-tap Kaiser-windowed sinc (`audio.rs`, `Upsampler`): flat to 3.6 kHz,
+  60 dB down from 3.95 kHz. A test holds 300 to 3400 Hz within 3 % and
+  their images under −54 dB. This is for every call, 8400 bit/s too.
+* The 21000 bit/s decoder has an adaptive post-filter after the appendix's
+  filter (`mplpc.rs`, `PostFilter`; `Decoder::with_postfilter`, which the
+  engine uses; `Decoder::new` is still the appendix to the letter):
+  A(z/0.55)/A(z/0.7) with tilt compensation and the level put back, G.729's
+  short-term post-filter. On the recorded call the level is unchanged
+  (RMS 0.0414 → 0.0415) and the spectrum of loud frames is 1.1 dB deeper
+  between its peaks: mild on purpose. `mplpc_wav --plain` makes the sound
+  without it.
+
 What the appendix leaves open, settled on the recorded call:
 
 * The coefficient tables are sines of evenly spaced angles, each output

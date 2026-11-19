@@ -608,7 +608,7 @@ fn start_chain(
         _ if bit_rate == 21_000 => (
             Chain::C21 {
                 decoder: C21Decoder::new(),
-                voice: Box::new(mplpc::Decoder::new()),
+                voice: Box::new(mplpc::Decoder::with_postfilter()),
             },
             Kind::C,
             0.5,
