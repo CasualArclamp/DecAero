@@ -1,18 +1,25 @@
 // made by CasualArclamp
 //! Speech from saved 9.6 kbit/s voice frames (the headless example's
 //! `--raw-voice` files: 24 octets a frame, 50 frames a second).
-//! `mplpc_wav VOICE.bin OUT.wav`
+//! `mplpc_wav VOICE.bin OUT.wav [--plain]` (`--plain`: the appendix's
+//! decoder to the letter, without the post-filter the apps play through)
 
 use decaero_core::mplpc::{Decoder, FRAME_BYTES, FRAME_SAMPLES, FrameKind};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let plain = args.iter().any(|a| a == "--plain");
+    args.retain(|a| a != "--plain");
     let [input, output] = args.as_slice() else {
-        eprintln!("usage: mplpc_wav VOICE.bin OUT.wav");
+        eprintln!("usage: mplpc_wav VOICE.bin OUT.wav [--plain]");
         return;
     };
     let raw = std::fs::read(input).expect("read the voice frames");
-    let mut decoder = Decoder::new();
+    let mut decoder = if plain {
+        Decoder::new()
+    } else {
+        Decoder::with_postfilter()
+    };
     let mut pcm = Vec::with_capacity(raw.len() / FRAME_BYTES * FRAME_SAMPLES);
     let mut kinds = [0u32; 3];
     for frame in raw.chunks_exact(FRAME_BYTES) {

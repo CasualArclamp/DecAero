@@ -22,6 +22,12 @@
 //! tenth-order all-pole filter. No post-filter and no smoothing between
 //! frames. The pulses' sizes are relative to a step size that follows the
 //! sizes already sent, so it has no field of its own.
+//!
+//! [`Decoder::with_postfilter`] adds what the appendix leaves out and
+//! later speech codecs made usual: an adaptive post-filter ([`PostFilter`])
+//! that pushes the coding noise down between the formants, where the ear
+//! hears it. It is not part of the appendix's decoder; [`Decoder::new`] is
+//! that decoder to the letter.
 
 /// Octets in a frame.
 pub const FRAME_BYTES: usize = 24;
@@ -191,6 +197,101 @@ pub struct Decoder {
     last: Option<Fields>,
     /// Set when a frame was bad: the next bad one is not repeated.
     squelch: bool,
+    post: Option<PostFilter>,
+}
+
+/// An adaptive post-filter for the decoder's sound, of the kind of ITU-T
+/// G.729's short-term post-filter (clause 4.2.2 there; the idea is Chen and
+/// Gersho's, 1987): the frame's own synthesis filter 1/A(z), flattened,
+///
+/// ```text
+/// H(z) = A(z/0.55) / A(z/0.7) · (1 + t·z⁻¹)
+/// ```
+///
+/// which keeps the formant peaks and lowers the valleys between them by a
+/// few dB, where the multipulse coding noise is not masked by the speech.
+/// The last factor takes out the low-pass tilt the first leaves (`t` from
+/// the first reflection coefficient of its impulse response), and the level
+/// is then brought back to the input's, block by block, smoothly.
+struct PostFilter {
+    /// The decoder's output before this block, newest first.
+    x: [f32; 10],
+    /// This filter's all-pole part's output, newest first.
+    y: [f32; 10],
+    /// The tilt filter's last input.
+    tilt_in: f32,
+    gain: f32,
+}
+
+const POST_NUM: f32 = 0.55;
+const POST_DEN: f32 = 0.7;
+
+impl PostFilter {
+    fn new() -> Self {
+        Self {
+            x: [0.0; 10],
+            y: [0.0; 10],
+            tilt_in: 0.0,
+            gain: 1.0,
+        }
+    }
+
+    /// One block of the decoder's output `s`, made with the filter taps
+    /// `taps` (s[n] = e[n] + Σ taps[i]·s[n−1−i]), filtered in place.
+    fn block(&mut self, taps: &[f32; 10], s: &mut [f32]) {
+        let mut num = *taps;
+        let mut den = *taps;
+        let (mut a, mut b) = (POST_NUM, POST_DEN);
+        for i in 0..10 {
+            num[i] *= a;
+            den[i] *= b;
+            a *= POST_NUM;
+            b *= POST_DEN;
+        }
+        // The tilt of A(z/0.55)/A(z/0.7): from 20 samples of its impulse
+        // response, as G.729 does.
+        let mut h = [0f32; 20];
+        for n in 0..20 {
+            let mut v = if n == 0 { 1.0 } else { 0.0 };
+            if (1..=10).contains(&n) {
+                v -= num[n - 1];
+            }
+            for i in 0..10.min(n) {
+                v += den[i] * h[n - 1 - i];
+            }
+            h[n] = v;
+        }
+        let r0: f32 = h.iter().map(|v| v * v).sum();
+        let r1: f32 = h.windows(2).map(|w| w[0] * w[1]).sum();
+        let k = if r0 > 0.0 { -r1 / r0 } else { 0.0 };
+        let tilt = k * if k < 0.0 { 0.9 } else { 0.2 };
+
+        let energy_in: f32 = s.iter().map(|v| v * v).sum();
+        let mut energy_out = 0f32;
+        for v in s.iter_mut() {
+            let x = *v;
+            let fir = x - num.iter().zip(&self.x).map(|(t, p)| t * p).sum::<f32>();
+            let y = fir + den.iter().zip(&self.y).map(|(t, p)| t * p).sum::<f32>();
+            self.x.copy_within(..9, 1);
+            self.x[0] = x;
+            self.y.copy_within(..9, 1);
+            self.y[0] = y;
+            let out = y + tilt * self.tilt_in;
+            self.tilt_in = y;
+            energy_out += out * out;
+            *v = out;
+        }
+        // The level put back to the input's, moving to it over about 10 ms.
+        let want = if energy_out > 1e-9 {
+            (energy_in / energy_out).sqrt().min(4.0)
+        } else {
+            1.0
+        };
+        for v in s.iter_mut() {
+            self.gain += 0.0125 * (want - self.gain);
+            *v *= self.gain;
+        }
+    }
 }
 
 impl Default for Decoder {
@@ -217,6 +318,16 @@ impl Decoder {
             out: [0.0; 10],
             last: None,
             squelch: false,
+            post: None,
+        }
+    }
+
+    /// The decoder with the adaptive post-filter on its output: what the
+    /// apps play. See [`PostFilter`].
+    pub fn with_postfilter() -> Self {
+        Self {
+            post: Some(PostFilter::new()),
+            ..Self::new()
         }
     }
 
@@ -331,6 +442,7 @@ impl Decoder {
                     pulses[usize::from(place)] = size;
                 }
             }
+            let mut sound = [0f32; BLOCK];
             for (n, pulse) in pulses.iter().enumerate() {
                 let at = keep + block * BLOCK + n;
                 let x = gain * self.past[at - delay] + pulse;
@@ -338,6 +450,12 @@ impl Decoder {
                 let y = x + taps.iter().zip(&self.out).map(|(t, o)| t * o).sum::<f32>();
                 self.out.copy_within(..9, 1);
                 self.out[0] = y;
+                sound[n] = y;
+            }
+            if let Some(post) = &mut self.post {
+                post.block(&taps, &mut sound);
+            }
+            for (n, y) in sound.iter().enumerate() {
                 pcm[block * BLOCK + n] = (y * TO_PCM).clamp(-32768.0, 32767.0) as i16;
             }
         }
