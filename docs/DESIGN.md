@@ -234,10 +234,10 @@ spec was found, so all of this was measured on that recording.
 
 | Carrier (MHz) | Symbols/s | Pulse | Frame | ID seen |
 |---|---|---|---|---|
-| 1546.0181, 1546.6206 | 51200/21 = 2438.095 | RRC, about 0.8 | 8192 symbols, 3.36 s | 14CE (both) |
+| 1546.0181, 1546.6206 | 51200/21 = 2438.095 | RRC, about 0.4 | 8192 symbols, 3.36 s | 14CE (both) |
 | 1546.5806 | 2438.095 | RRC | 8192 symbols | E932 |
 | 1546.6006 | 25600/21 = 1219.048 | RRC | 8192 symbols, 6.72 s | 4088 |
-| 1546.2232, 1547.0306 | 1200 | unfiltered | none fixed (packets) | – |
+| 1546.2232, 1547.0306 | 1200 | RRC, about 0.4 | none fixed (packets) | – |
 
 - Framed carriers: a 64-symbol unique word, `C2B5D127` twice, uncoded. From
   its last symbol on come 8128 symbols of the Aero code (K=7, 133 / 171) with

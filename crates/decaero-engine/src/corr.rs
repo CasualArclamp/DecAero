@@ -35,7 +35,7 @@ pub(crate) fn find(
     width_hz: f64,
 ) -> Option<FoundBpsk> {
     // Measured widths 6 dB down: 1.14 times the symbol rate on the framed
-    // carriers, 0.94 on the unfiltered one. Half the rate is the floor.
+    // carriers, 0.94 on the 1200 ones. Half the rate is the floor.
     let rates: Vec<f64> = corr::ALL_RATES
         .iter()
         .copied()

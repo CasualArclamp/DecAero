@@ -1297,46 +1297,51 @@ impl App {
         );
         section(ui, "FEC");
         let bad = c.crc_bad > 0;
-        rows(
-            ui,
-            "fec",
-            &[
-                ("Code", code.to_string(), None),
+        let corr = matches!(c.kind, Kind::Corr(_));
+        let mut fec_rows = vec![
+            ("Code", code.to_string(), None),
+            (
+                "FEC load",
+                format!("{:.0}%", c.fec_load * 100.0),
+                Some(load_colour(c.fec_load)),
+            ),
+            (
+                "Pre-FEC BER",
+                format!("{:.1e}", c.pre_fec_ber),
+                Some(load_colour(c.fec_load)),
+            ),
+            ("Corrected", format!("{} bits", c.corrected_bits), None),
+            (
+                "Unique word",
+                format!("{} of {} bits wrong", c.uw_wrong, c.uw_bits),
+                None,
+            ),
+            if matches!(c.kind, Kind::Corr(_)) {
+                // No CRC is known in these frames; the zero tail and
+                // the re-encoded bits are the checks.
+                ("CRC", "none known".to_string(), Some(DIM))
+            } else {
                 (
-                    "FEC load",
-                    format!("{:.0}%", c.fec_load * 100.0),
-                    Some(load_colour(c.fec_load)),
-                ),
-                (
-                    "Pre-FEC BER",
-                    format!("{:.1e}", c.pre_fec_ber),
-                    Some(load_colour(c.fec_load)),
-                ),
-                ("Corrected", format!("{} bits", c.corrected_bits), None),
-                (
-                    "Unique word",
-                    format!("{} of {} bits wrong", c.uw_wrong, c.uw_bits),
-                    None,
-                ),
-                if matches!(c.kind, Kind::Corr(_)) {
-                    // No CRC is known in these frames; the zero tail and
-                    // the re-encoded bits are the checks.
-                    ("CRC", "none known".to_string(), Some(DIM))
-                } else {
-                    (
-                        "CRC",
-                        format!("{} good · {} bad", c.crc_good, c.crc_bad),
-                        Some(if bad { WARN } else { GOOD }),
-                    )
-                },
-                (
-                    "Frames",
-                    format!("{} · {} lock losses", c.frames, c.lock_losses),
-                    None,
-                ),
-                ("Bursts", format!("{} decoded", c.bursts), None),
-            ],
-        );
+                    "CRC",
+                    format!("{} good · {} bad", c.crc_good, c.crc_bad),
+                    Some(if bad { WARN } else { GOOD }),
+                )
+            },
+            (
+                "Frames",
+                format!("{} · {} lock losses", c.frames, c.lock_losses),
+                None,
+            ),
+            ("Bursts", format!("{} decoded", c.bursts), None),
+        ];
+        // A correction carrier has no bursts, and an unframed one no
+        // unique word.
+        if corr {
+            fec_rows.retain(|(label, _, _)| {
+                *label != "Bursts" && (*label != "Unique word" || c.uw_bits > 0)
+            });
+        }
+        rows(ui, "fec", &fec_rows);
         if c.kind == Kind::C {
             section(ui, "Voice");
             rows(
