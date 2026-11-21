@@ -132,6 +132,24 @@ pub struct Demod {
     m4: f32,
 }
 
+/// A-BPSK samples on the real axis with the other rail's leak taken out of
+/// the imaginary part: `im[n] - k (d[n+1] - d[n-1])`, `d` the decisions and
+/// `k` fitted over the samples. The first and last sample, which have a
+/// neighbour on one side only, are left out.
+fn without_neighbours(points: &[Complex32]) -> Vec<Complex32> {
+    let d: Vec<f32> = points.iter().map(|p| p.re.signum()).collect();
+    let (mut num, mut den) = (0f32, 0f32);
+    for n in 1..points.len() - 1 {
+        let pattern = d[n + 1] - d[n - 1];
+        num += points[n].im * pattern;
+        den += pattern * pattern;
+    }
+    let k = if den > 0.0 { num / den } else { 0.0 };
+    (1..points.len() - 1)
+        .map(|n| Complex32::new(points[n].re, points[n].im - k * (d[n + 1] - d[n - 1])))
+        .collect()
+}
+
 pub(crate) fn rrc(sps: f64, alpha: f64, span: usize) -> Vec<f32> {
     let n = (span as f64 * sps).round() as usize | 1;
     let mid = (n / 2) as f64;
@@ -434,6 +452,17 @@ impl Demod {
                     .map(|pair| Complex32::new(pair[0].re, pair[1].re))
                     .collect();
             }
+            // A-BPSK is MSK-like: at each bit's sampling instant the other
+            // rail is between its symbols, and the matched filter lets in a
+            // third of each neighbour, (next - previous) of them on the
+            // imaginary axis, which draws the two dots as three each. That
+            // part is known from the decisions either side, so it is taken
+            // out of the picture (how much: a least-squares fit over the
+            // block). For the picture only: the bits come from the real
+            // part, which is untouched.
+            if matches!(self.modulation, Modulation::ABpsk) && scatter.len() >= 3 {
+                scatter = without_neighbours(&scatter);
+            }
             self.status.scatter = scatter;
             for (i, &v) in a.iter().enumerate() {
                 let v = v * scale;
@@ -664,6 +693,28 @@ mod tests {
         for (re, im) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
             assert!(scatter.iter().any(|p| p.re * re > 0.0 && p.im * im > 0.0));
         }
+    }
+
+    /// A-BPSK is drawn as two dots: once settled, the imaginary parts of a
+    /// clean signal sit near zero instead of at three levels.
+    #[test]
+    fn abpsk_is_shown_as_two_dots() {
+        let mut seed = 3;
+        let bits: Vec<u8> = (0..6000).map(|_| (lcg(&mut seed) >> 31) as u8).collect();
+        let signal = msk(&bits, 8, 0.0);
+        let mut demod = Demod::new(Modulation::ABpsk, 600, 4800.0, 0.0);
+        let mut soft = Vec::new();
+        let mut points = Vec::new();
+        for (i, chunk) in signal.chunks(800).enumerate() {
+            demod.process(chunk, &mut soft);
+            if i > 5 {
+                points.extend(demod.status().scatter.iter().copied());
+            }
+        }
+        assert!(points.len() > 1000);
+        let worst = points.iter().map(|p| p.im.abs()).fold(0f32, f32::max);
+        assert!(worst < 0.15, "imaginary parts up to {worst}");
+        assert!(points.iter().all(|p| (0.7..1.3).contains(&p.re.abs())));
     }
 
     #[test]
