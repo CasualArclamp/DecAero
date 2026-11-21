@@ -608,19 +608,54 @@ emulator was driven by single taps), a real phone's speed.
 Not done: running in the background, a notification for calls, CI and a
 release job for the APK, the other radios over USB (HackRF, Pluto).
 
-## A drifting receiver
+## A wandering receiver
 
-Seen 2026-11-21 on an RTL-SDR Blog V4 on a phone: a P 1200 carrier would not
-stay locked, its constellation a ring. Nothing was short of time (8 ms a
-frame, 13 % of a core, no blocks lost); the carrier was moving at about
-1.3 Hz a second as the dongle warmed, and the frequency loop, which took a
-tenth of the error a block, lagged behind it.
+Seen 2026-11-21 on an RTL-SDR Blog V4 (phone and PC alike): P 600 and P 1200
+carriers of 4 to 5 dB Eb/N0 would not stay locked, their constellations a
+ring. Nothing was short of time (8 ms a frame, 13 % of a core, no blocks
+lost). Two recordings made with the dongle on the PC, bias tee on
+(`out/v4.wav`, 47 s from a cold start, and `out/v4long.wav`, 217 s; neither
+committed) showed why:
 
-The loop (`decaero-dsp/src/demod.rs`) now also learns the rate of drift and
-adds it every block (`DRIFT_GAIN`), held to 6 Hz a second. Measured on the
-test modulator at 5 dB Es/N0 (`a_drifting_carrier_is_followed`): at 3 Hz/s
-the bit error rate was 24 % at 600 bit/s and is now 1.7 % (1.2 % standing
-still, unchanged); at 1.5 Hz/s it is the same as standing still. On the
-recordings (`areo.wav`'s three weak P 10500, `areo2`, `areo4`) the CRC
-counts are the same with and without it, within a frame or two.
-Not yet seen on the dongle itself.
+- everything that comes through the tuner moves together: some 150 Hz in the
+  first seconds after the radio starts, then on and on by 10 Hz or so from
+  one five seconds to the next, for as long as was recorded (a line tracked
+  with an FFT every 5 s). A spur made inside the dongle after the tuner
+  stayed where it was in the first recording, so it is not the samples;
+- `scripts/line_width.py` squares a P channel, which gives two lines half the
+  bit rate either side: on a HydraSDR recording 84 % of a line's power is
+  within 10 Hz, on the V4's 14 %.
+
+Whether that is the tuner's synthesiser, its reference being pulled by the
+supply, or the room (the aerial was held in a hand indoors) was not
+separated; the receiver has to cope either way. What was changed, scored by
+the frames with a good CRC over every carrier in a recording (`headless`,
+follow mode):
+
+| | v4long | v4 | areo (HydraSDR) |
+|---|---|---|---|
+| as it was | 74.6 % | 34.2 % | 85.1 % |
+| frequency loop: drift term, more gain on a large error | 81.4 % | 38.4 % | 85.8 % |
+| and phase every 32 bits at 600 and 1200 bit/s | 92.8 % | 88.3 % | 85.9 % |
+
+- **The frequency loop** (`decaero-dsp/src/demod.rs`) took a tenth of its
+  error a block. It now takes more the larger the error (half at 2 Hz), turns
+  its averaged measurement back by what it has just corrected, and learns a
+  rate of drift that it adds every block. On the test modulator
+  (`a_drifting_carrier_is_followed`) a steady carrier's bit errors are as
+  before (10.8 % at 1 dB Es/N0, 4.5 % at 3 dB) and 3 Hz/s, which gave 24 %
+  errors at 5 dB, gives 1.7 %. For every input.
+- **Phase more often** (`set_noisy_oscillator`, `Options::noisy_oscillator`):
+  the carrier's phase was measured once a block of 64 bits (600 bit/s) or
+  128 (1200), about a tenth of a second, and drawn straight between; that is
+  now 32 bits for both. On a steady receiver it costs a little at the very
+  bottom (bit errors 10.8 % to 11.4 % at 1 dB Es/N0, 4.5 % to 4.6 % at 3 dB),
+  so it is on only for the RTL-SDR, or with `--noisy-osc` for a recording
+  made with one. Shorter still was better on these recordings at 600 bit/s
+  (24 bits: 96 %) but fell apart on the test modulator under 3 dB.
+
+Still to do: tell a wandering receiver from a steady one by measuring it
+(the scatter of the quarter-block phases) in place of going by the radio's
+name; measure the phase on part-blocks while timing and frequency keep the
+whole block, which should allow 16 bits at 600 bit/s; find out what moves
+the V4's tuner.

@@ -56,6 +56,23 @@ impl Modulation {
 /// damped: it settles on a ramp in some forty blocks without ringing.
 const DRIFT_GAIN: f64 = 0.002;
 
+/// The receiver's own oscillator wanders by hertz within a tenth of a
+/// second (an RTL-SDR at L-band: see docs/DESIGN.md, "A wandering receiver").
+static NOISY_OSCILLATOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say whether the input comes from a receiver with a wandering oscillator.
+/// Demodulators made after this measure the carrier's phase four times (at
+/// 600 bit/s: twice) as often at 600 and 1200 bit/s. That follows the wander;
+/// on a steady receiver it would only cost a little at the very weakest
+/// signals (bit errors 10.8 % to 11.4 % at 1 dB Es/N0), so it is off unless
+/// asked for.
+///
+/// Rust note: an atomic can be read and written from any thread without a
+/// lock; `Relaxed` is enough for a flag nothing else is ordered against.
+pub fn set_noisy_oscillator(on: bool) {
+    NOISY_OSCILLATOR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Trial timing offsets per bit.
 const TRIALS: usize = 8;
 
@@ -178,6 +195,13 @@ impl Demod {
             1000..5000 => 128,
             5000..9000 => 512,
             _ => 256,
+        };
+        // A receiver whose oscillator wanders (see `set_noisy_oscillator`)
+        // has its phase measured every 32 bits at the slow rates: 53 ms at
+        // 600 bit/s, 27 ms at 1200.
+        let block = match bit_rate as u32 {
+            0..5000 if NOISY_OSCILLATOR.load(std::sync::atomic::Ordering::Relaxed) => 32,
+            _ => block,
         };
         Self {
             modulation,
@@ -438,15 +462,23 @@ impl Demod {
             let per_quarter =
                 0.5 * f64::from(self.freq_vector.im).atan2(f64::from(self.freq_vector.re));
             let hz = per_quarter / (TAU * (b / 4) as f64 / self.bit_rate);
-            // A tenth of the error at once, and a little of it into the
-            // drift, which is then added every block (a second-order loop:
-            // a carrier moving steadily, as a warming oscillator's does, is
+            // A tenth of the error at once, more of it the larger it is (half
+            // at 2 Hz and over: a carrier that has got away is caught in a
+            // block or two, while one that is held is steered as gently as
+            // before), and a little into the drift, which is then added
+            // every block (a second-order loop: a carrier moving steadily is
             // followed without lagging behind it). The drift is held to
-            // what an oscillator does, about 6 Hz a second, so noise cannot
-            // send the loop running.
+            // about 6 Hz a second, so noise cannot send the loop running.
             let limit = 6.0 * b as f64 / self.bit_rate;
             self.drift_hz = (self.drift_hz + DRIFT_GAIN * hz).clamp(-limit, limit);
-            self.nco_hz += 0.1 * hz + self.drift_hz;
+            let gain = (0.1 + 0.2 * hz.abs()).min(0.5);
+            let moved = gain * hz + self.drift_hz;
+            self.nco_hz += moved;
+            // What was measured is now partly put right: turn the averaged
+            // measurement back by as much, or the loop would act on the same
+            // error again next block.
+            let turn = 2.0 * TAU * moved * (b / 4) as f64 / self.bit_rate;
+            self.freq_vector *= Complex32::from_polar(1.0, -turn as f32);
             self.status.offset_hz = self.nco_hz;
             self.status.clock_ppm = self.timing_sum;
             self.theta_before = Some(self.theta_held);

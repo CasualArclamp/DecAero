@@ -10,7 +10,7 @@
 //! On Android the same code is started by `apps/decaero-android`, which hands
 //! over what a phone does differently in a [`Platform`].
 //!
-//! `decaero-gui [--touch [--panel chan|log|planes|calls|input|more] [--keys]] [--size WxH] [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--follow-range LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
+//! `decaero-gui [--noisy-osc] [--touch [--panel chan|log|planes|calls|input|more] [--keys]] [--size WxH] [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--follow-range LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
 mod activity;
 mod aircraft;
@@ -216,6 +216,9 @@ struct App {
     panel: Option<touch::Panel>,
     keypad: Option<touch::Keypad>,
     picker: Option<Box<dyn Picker>>,
+    /// The input's oscillator wanders (an RTL-SDR, or `--noisy-osc` for a
+    /// recording made with one): told to the engine when it starts.
+    noisy_oscillator: bool,
     /// For the touch layout's line of figures: how long frames take.
     frames: touch::Frames,
 }
@@ -287,6 +290,7 @@ impl App {
                 // Beside the calls: the frames of 21000 bit/s calls that are
                 // fax or data, whose layout is not known yet.
                 raw_voice_dir: self.recorder.as_ref().map(|r| r.dir().join("21k")),
+                noisy_oscillator: self.noisy_oscillator,
                 feeds: self.feeds.clone(),
                 ..Options::default()
             },
@@ -403,6 +407,8 @@ impl App {
         // Let go of whatever is running first: it may be this same radio.
         self.engine = None;
         self.radio_control = None;
+        // The RTL-SDR's tuner wanders at L-band (docs/DESIGN.md).
+        self.noisy_oscillator = info.key == "rtl";
         let request = decaero_radio::RadioRequest {
             key: info.key.clone(),
             center_hz: self.center_hz(),
@@ -2291,6 +2297,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
     let mut args = args.into_iter();
     let mut touch = platform.touch;
     let mut size = None;
+    let mut noisy_oscillator = false;
     let mut panel = None;
     let mut keys = false;
     let mut file = None;
@@ -2321,6 +2328,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
             "--center" => center_text = args.next().unwrap_or_default(),
             "--fast" => fast = true,
             "--touch" => touch = true,
+            "--noisy-osc" => noisy_oscillator = true,
             // For an unattended look at the touch layout: a side panel
             // open, or the keys up.
             "--panel" => panel = args.next().as_deref().and_then(touch::Panel::parse),
@@ -2495,6 +2503,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
                 panel,
                 keypad: None,
                 picker,
+                noisy_oscillator,
                 frames: touch::Frames::default(),
             };
             // Settings of the last run. An unattended screenshot run keeps
