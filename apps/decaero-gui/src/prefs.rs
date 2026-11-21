@@ -16,6 +16,9 @@ pub struct Prefs {
 impl Prefs {
     /// Where the settings live unless `--prefs` says otherwise.
     pub fn default_path() -> PathBuf {
+        if let Some(dir) = crate::data_dir() {
+            return dir.join("prefs.txt");
+        }
         let base = std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))

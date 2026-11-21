@@ -43,7 +43,27 @@ pub enum Action {
     },
 }
 
+/// What one finger dragged along the band does, on a touch screen (a mouse
+/// has a button for each).
+#[derive(PartialEq, Clone, Copy)]
+pub enum Drag {
+    /// Move the view.
+    Pan,
+    /// Draw the box of a new decoder.
+    Add,
+    /// Tune a live input.
+    Tune,
+}
+
 pub struct Band {
+    /// Handled with fingers: one drags (`drag` says what that does), two
+    /// pinch to zoom.
+    pub touch: bool,
+    pub drag: Drag,
+    /// The narrowest view allowed, Hz, and whether the input is a real one
+    /// (only its upper half is shown): as worked out when last drawn.
+    min_view: f64,
+    real: bool,
     /// History at full resolution, newest first, each with the noise floor
     /// it was taken at: zooming in redraws from these, so it stays sharp.
     rows: VecDeque<(f32, Row, f64)>,
@@ -191,6 +211,10 @@ fn mid(v: f32, ppp: f32) -> f32 {
 impl Band {
     pub fn new() -> Self {
         Self {
+            touch: false,
+            drag: Drag::Pan,
+            min_view: 1.0,
+            real: false,
             rows: VecDeque::new(),
             size: [0, 0],
             thick: 1,
@@ -233,6 +257,29 @@ impl Band {
             self.counted.0 += 1.0;
         }
         self.rows.truncate(RING);
+    }
+
+    /// Make the view `factor` times as wide, about its middle (the touch
+    /// layout's zoom buttons).
+    pub fn zoom(&mut self, factor: f64) {
+        let middle = (self.lo + self.hi) / 2.0;
+        let w = ((self.hi - self.lo) * factor).clamp(self.min_view, self.span);
+        self.lo = middle - w / 2.0;
+        self.hi = self.lo + w;
+        self.clamp_view();
+        self.dirty = true;
+    }
+
+    /// Show the whole band again.
+    pub fn zoom_out(&mut self) {
+        self.lo = if self.real { 0.0 } else { -self.span / 2.0 };
+        self.hi = self.span / 2.0;
+        self.dirty = true;
+    }
+
+    /// The view is narrower than the band.
+    pub fn zoomed(&self) -> bool {
+        self.hi - self.lo < self.span * if self.real { 0.4999 } else { 0.999 }
     }
 
     fn clamp_view(&mut self) {
@@ -424,6 +471,7 @@ impl Band {
         // has 1 Hz bins), or at 32 of the band's own bins if that is less.
         let bins = view.spectrum_db.len().max(64) as f64;
         let min_view = (rate / bins * 32.0).clamp(1.0, 300.0);
+        (self.min_view, self.real) = (min_view, view.real);
         if let Some(p) = response.hover_pos() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
@@ -437,14 +485,39 @@ impl Band {
                 self.dirty = true;
             }
         }
+        // Two fingers: pinching zooms about the point between them, and
+        // moving them together moves the view.
+        let pinch = ui
+            .input(|i| i.multi_touch())
+            .filter(|m| self.touch && rect.contains(m.center_pos));
+        if let Some(m) = pinch {
+            let c = hz_at(m.center_pos.x, lo, hi);
+            let new_w = ((hi - lo) / f64::from(m.zoom_delta.max(0.01))).clamp(min_view, self.span);
+            let frac = (c - lo) / (hi - lo);
+            self.lo = c - frac * new_w - f64::from(m.translation_delta.x / rect.width()) * new_w;
+            self.hi = self.lo + new_w;
+            self.clamp_view();
+            self.dirty = true;
+            self.drag_from = None;
+        }
+        // One finger does what the middle or the right button would.
+        let finger = |what: Drag| {
+            self.touch
+                && pinch.is_none()
+                && self.drag == what
+                && response.dragged_by(PointerButton::Primary)
+        };
+        let (finger_tune, finger_pan) = (finger(Drag::Tune), finger(Drag::Pan));
         // The middle button tunes a live input: the band follows the mouse
         // and the radio is moved to suit. (A recording has no tuning, so
         // there it pans like the right button.)
-        if view.live && response.dragged_by(PointerButton::Middle) {
+        if view.live && (response.dragged_by(PointerButton::Middle) || finger_tune) {
             self.tune_by -= f64::from(response.drag_delta().x / rect.width()) * (hi - lo);
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         } else if response.dragged_by(PointerButton::Secondary)
             || response.dragged_by(PointerButton::Middle)
+            || finger_pan
+            || finger_tune
         {
             let d = f64::from(response.drag_delta().x / rect.width()) * (hi - lo);
             self.lo -= d;
@@ -711,7 +784,8 @@ impl Band {
         }
         // Left-drag draws the box of a new decoder (as dropping a VFO in
         // DecSAT); letting go starts it, and it names the carrier itself.
-        if response.drag_started_by(PointerButton::Primary) {
+        let boxing = !self.touch || (self.drag == Drag::Add && pinch.is_none());
+        if boxing && response.drag_started_by(PointerButton::Primary) {
             let origin = ui
                 .input(|i| i.pointer.press_origin())
                 .unwrap_or(rect.center());
@@ -758,10 +832,14 @@ impl Band {
         }
         // How far in the view is, when it is not the whole band.
         if width_hz < self.span * 0.999 {
-            let text = format!(
-                "{:.1} kHz across · wheel zooms, right-drag pans",
-                width_hz / 1e3
-            );
+            let text = if self.touch {
+                format!("{:.1} kHz across", width_hz / 1e3)
+            } else {
+                format!(
+                    "{:.1} kHz across · wheel zooms, right-drag pans",
+                    width_hz / 1e3
+                )
+            };
             painter.text(
                 pos2(spec.right() - 6.0, spec.bottom() - 3.0),
                 Align2::RIGHT_BOTTOM,
@@ -787,8 +865,10 @@ impl Band {
                 };
             }
             if response.clicked() {
-                // Within eight pixels of the carrier, or inside a wide one's mark.
-                let reach = 8.0 / f64::from(rect.width()) * width_hz;
+                // Within eight pixels of the carrier (a finger: twenty), or
+                // inside a wide one's mark.
+                let reach =
+                    if self.touch { 20.0 } else { 8.0 } / f64::from(rect.width()) * width_hz;
                 if let Some(c) = view
                     .channels
                     .iter()

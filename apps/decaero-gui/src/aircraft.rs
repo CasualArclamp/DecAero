@@ -177,6 +177,9 @@ impl Lookup {
     /// Where the database lives unless told otherwise: the settings folder,
     /// or `db/` beside the working directory when that already has one.
     pub fn default_path() -> PathBuf {
+        if let Some(dir) = crate::data_dir() {
+            return dir.join("aircraft.csv.gz");
+        }
         let local = PathBuf::from("db").join("aircraft.csv.gz");
         if local.is_file() {
             return local;
