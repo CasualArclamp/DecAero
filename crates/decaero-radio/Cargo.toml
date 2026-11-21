@@ -18,7 +18,7 @@ airspy = ["decsat-io/airspy"]
 pluto = ["decsat-io/pluto"]
 sdrplay = ["decsat-io/sdrplay"]
 fobos = ["decsat-io/fobos"]
-rtl = ["decsat-io/rtl"]
+rtl = ["dep:rtl-sdr-rs"]
 uhd = ["decsat-io/uhd"]
 
 [dependencies]
@@ -27,11 +27,14 @@ num-complex.workspace = true
 # DecSAT's I/O crate, pinned to a release. Cargo fetches the whole DecSAT
 # repository for it but builds only these two light crates.
 decsat-io = { git = "https://github.com/CasualArclamp/DecSAT", tag = "v1.10.0" }
+# The RTL-SDR, in pure Rust over USB (src/rtl_usb.rs): no rtlsdr.dll, no
+# libusb. On Windows the dongle must be on the WinUSB driver (Zadig), as it
+# is for any other RTL-SDR program.
+# `rtl_sdr_blog`: the RTL-SDR Blog driver's settings for the R82xx's PLL (full
+# VCO current, 2.0 V drop-out). Without them the PLL loses lock at L-band,
+# which is where Aero is.
+rtl-sdr-rs = { version = "0.4.3", features = ["rtl_sdr_blog"], optional = true }
 decsat-core = { git = "https://github.com/CasualArclamp/DecSAT", tag = "v1.10.0" }
-
-# RTL-SDR where there is no rtlsdr.dll: pure Rust over USB (src/rtl_usb.rs).
-[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
-rtl-sdr-rs = "0.4.3"
 
 # Android hands a USB device over as a descriptor: the Airspy driver is told
 # of it directly (vendor/libairspy-rs).

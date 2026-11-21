@@ -7,7 +7,7 @@
 //! can draw controls for any of them) is DecSAT's `decsat-remote/src/radios.rs`
 //! (same author, GPL-3), with the RTL-SDR and UHD added.
 
-#[cfg(all(feature = "rtl", any(target_os = "android", target_os = "linux")))]
+#[cfg(feature = "rtl")]
 mod rtl_usb;
 
 use decaero_engine::Source;
@@ -74,10 +74,21 @@ pub fn set_usb_opener(opener: UsbOpener) {
     let _ = USB_OPENER.set(opener);
 }
 
-/// The radio's descriptor from the system, where the system has to be asked.
-#[cfg(any(target_os = "android", target_os = "linux"))]
+/// A USB device the system opened for us. Only Unix-like systems hand
+/// devices over this way; elsewhere there is never one.
+///
+/// Rust note: `Infallible` is a type with no values, so on Windows an
+/// `Option<UsbFd>` can only be `None` and the compiler knows it.
+#[cfg(unix)]
+pub(crate) type UsbFd = std::os::fd::OwnedFd;
+#[cfg(not(unix))]
+pub(crate) type UsbFd = std::convert::Infallible;
+
+/// The radio's descriptor from the system, where the system has to be asked
+/// (Android); `None` where the driver finds the radio itself.
+#[cfg(unix)]
 #[allow(dead_code)] // used by whichever radios are compiled in
-fn usb_fd(ids: &[(u16, u16)]) -> Result<Option<std::os::fd::OwnedFd>> {
+fn usb_fd(ids: &[(u16, u16)]) -> Result<Option<UsbFd>> {
     use std::os::fd::BorrowedFd;
     let Some(opener) = USB_OPENER.get() else {
         return Ok(None);
@@ -92,9 +103,14 @@ fn usb_fd(ids: &[(u16, u16)]) -> Result<Option<std::os::fd::OwnedFd>> {
     Ok(Some(ours))
 }
 
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn usb_fd(_ids: &[(u16, u16)]) -> Result<Option<UsbFd>> {
+    Ok(None)
+}
+
 /// USB ids of the RTL2832U dongles in common use (librtlsdr's `known_devices`:
 /// the generic ids, which the RTL-SDR Blog V3 and V4 use too).
-#[cfg(any(target_os = "android", target_os = "linux"))]
 #[allow(dead_code)]
 const RTL_IDS: [(u16, u16); 2] = [(0x0bda, 0x2838), (0x0bda, 0x2832)];
 
@@ -186,10 +202,7 @@ pub fn list() -> Vec<RadioInfo> {
         gains: fobos_gains(),
         bias_tee: None,
     });
-    #[cfg(all(
-        feature = "rtl",
-        any(windows, target_os = "android", target_os = "linux")
-    ))]
+    #[cfg(feature = "rtl")]
     v.push(RadioInfo {
         key: "rtl".into(),
         name: "RTL-SDR (V3, V4)".into(),
@@ -499,31 +512,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                 };
                 (Box::new(s), Some(Arc::new(live)))
             }
-            #[cfg(all(windows, feature = "rtl"))]
-            "rtl" => {
-                let s = decsat_io::RtlSource::open(decsat_io::RtlSettings {
-                    center_hz: req.center_hz as u32,
-                    rate: req.sample_rate as u32,
-                    gain_tenths: (value(&gains, "gain") * 10.0) as i32,
-                    manual_gain: value(&gains, "auto") < 0.5,
-                    bias_tee: req.bias_tee && info.bias_tee.is_some(),
-                    ..Default::default()
-                })?;
-                let live = Live {
-                    ctl: s.control(),
-                    gains: gains.into(),
-                    center: |c: &decsat_io::RtlControl, hz| {
-                        c.tune(hz as u32);
-                        Ok(())
-                    },
-                    apply: |c: &decsat_io::RtlControl, g| {
-                        c.gain(value(g, "auto") < 0.5, (value(g, "gain") * 10.0) as i32);
-                        Ok(())
-                    },
-                };
-                (Box::new(s), Some(Arc::new(live)))
-            }
-            #[cfg(all(feature = "rtl", any(target_os = "android", target_os = "linux")))]
+            #[cfg(feature = "rtl")]
             "rtl" => {
                 let s = rtl_usb::Source::open(rtl_usb::Settings {
                     center_hz: req.center_hz as u32,

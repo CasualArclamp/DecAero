@@ -499,6 +499,7 @@ dependencies = [
  "decaero-radio",
  "jni 0.21.1",
  "libc",
+ "log",
  "ndk-context",
 ]
 

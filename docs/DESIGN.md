@@ -577,8 +577,12 @@ sideways (a Galaxy S25 Ultra: about 830 by 380 points), with the RTL-SDR
   `MainActivity.openUsb` does that and returns the file descriptor;
   `decaero_radio::set_usb_opener` is how the radio crate reaches it. The
   drivers then open from the descriptor:
-  - RTL-SDR: `rtl-sdr-rs` (`crates/decaero-radio/src/rtl_usb.rs`), also used
-    on Linux, where the Windows `rtlsdr.dll` path does not exist;
+  - RTL-SDR: `rtl-sdr-rs` (`crates/decaero-radio/src/rtl_usb.rs`), which is
+    the RTL-SDR driver on every system now: the Windows exe no longer wants
+    `RTLtlsdr.dll` (the dongle needs the WinUSB driver, Zadig). Built with
+    its `rtl_sdr_blog` feature: the RTL-SDR Blog driver's PLL settings (full
+    VCO current, 2.0 V drop-out), without which the R82xx's PLL does not
+    hold lock at L-band (seen on a V4, 2026-11-21);
   - Airspy / HydraSDR: DecSAT's driver over `libairspy-rs`, as on the desktop.
   Both crates needed a small change to build for Android, so patched copies
   are in `vendor/` (each `Cargo.toml` says what changed) and the workspace's

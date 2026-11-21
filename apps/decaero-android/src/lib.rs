@@ -157,6 +157,20 @@ fn log_to_logcat() {
         });
 }
 
+/// What the USB drivers report through the `log` crate ("PLL not locked",
+/// which tuner was found), printed so it reaches Android's log with the rest.
+struct DriverLog;
+
+impl log::Log for DriverLog {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        eprintln!("{}: {}", record.target(), record.args());
+    }
+    fn flush(&self) {}
+}
+
 /// Where android-activity starts a native program.
 ///
 /// Rust note: `no_mangle` keeps the function's name as written so the
@@ -165,6 +179,9 @@ fn log_to_logcat() {
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
     log_to_logcat();
+    if log::set_logger(&DriverLog).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     let _ = ACTIVITY.set(app.activity_as_ptr() as usize);
     let data_dir = app
         .external_data_path()

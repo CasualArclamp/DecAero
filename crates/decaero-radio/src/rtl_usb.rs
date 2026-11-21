@@ -1,11 +1,12 @@
 // made by CasualArclamp
-//! RTL-SDR on Android and Linux, receive only: the `rtl-sdr-rs` crate (pure
-//! Rust over USB, MPL-2.0), which knows the RTL-SDR Blog V3 and V4 (the V4's
-//! R828D, its 28.8 MHz reference and its input switching). On Windows the
-//! radio is DecSAT's `rtl.rs` over `rtlsdr.dll` instead.
+//! RTL-SDR, receive only: the `rtl-sdr-rs` crate (pure Rust over USB,
+//! MPL-2.0), which knows the RTL-SDR Blog V3 and V4 (the V4's R828D, its
+//! 28.8 MHz reference and its input switching). No `rtlsdr.dll` and no
+//! libusb: on Windows the dongle needs the WinUSB driver (Zadig), as for any
+//! RTL-SDR program.
 //!
 //! On Android the device arrives as a file descriptor from the system (see
-//! `usb_fd` in `lib.rs`); on Linux the first dongle found is opened.
+//! `usb_fd` in `lib.rs`); elsewhere the first dongle found is opened.
 //!
 //! The dongle lives on a thread of its own, which reads blocks and takes
 //! tuning and gain changes between them. Rust note: that way nothing here
@@ -37,7 +38,7 @@ pub struct Settings {
     pub gain_tenths: i32,
     pub bias_tee: bool,
     /// Android: the descriptor the system opened. `None`: find the dongle.
-    pub fd: Option<std::os::fd::OwnedFd>,
+    pub fd: Option<crate::UsbFd>,
 }
 
 enum Change {
@@ -90,13 +91,15 @@ fn set_gain(sdr: &mut RtlSdr, manual: bool, tenths: i32) -> rtl_sdr_rs::error::R
     sdr.set_tuner_gain(gain)
 }
 
-/// Open and set up the dongle; the name it goes by.
-fn start(s: &Settings) -> Result<(RtlSdr, String)> {
-    use std::os::fd::AsRawFd;
+/// Open and set up the dongle; the name it goes by. The settings end here,
+/// and with them our copy of the descriptor (the driver has its own).
+fn start(s: Settings) -> Result<(RtlSdr, String)> {
     let mut sdr = match &s.fd {
-        // The driver duplicates the descriptor; ours is closed when
-        // `Settings` is dropped.
-        Some(fd) => RtlSdr::open_with_fd(fd.as_raw_fd()),
+        #[cfg(unix)]
+        Some(fd) => RtlSdr::open_with_fd(std::os::fd::AsRawFd::as_raw_fd(fd)),
+        // There is no such value on Windows (see `UsbFd`).
+        #[cfg(not(unix))]
+        Some(never) => match *never {},
         None => RtlSdr::open_with_index(0),
     }
     .map_err(|e| other("cannot open the dongle", e))?;
@@ -173,10 +176,9 @@ impl Source {
         let thread =
             std::thread::Builder::new()
                 .name("rtl-sdr".into())
-                .spawn(move || match start(&settings) {
+                .spawn(move || match start(settings) {
                     Ok((sdr, name)) => {
                         let _ = opened_tx.send(Ok(name));
-                        drop(settings);
                         run(sdr, changes_rx, blocks_tx, stop2, lost2);
                     }
                     Err(e) => {

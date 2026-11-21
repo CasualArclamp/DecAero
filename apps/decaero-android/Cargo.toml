@@ -22,6 +22,8 @@ decaero-radio = { path = "../../crates/decaero-radio", default-features = false,
 jni = "0.21"
 ndk-context = "0.1"
 libc = "0.2"
+# The USB drivers report through `log` (a PLL that will not lock, say).
+log = "0.4"
 
 [lints]
 workspace = true
