@@ -216,6 +216,55 @@ channel the unit is 19 octets and laid out otherwise: not read there.
     Rory's has been tried.
 13. A real-IF input shows and uses its upper half only (the lower is its mirror).
 
+14. L-band correction carriers (Rory, 2026-11-21: "a decoder for it that only
+    shows what's in the clear"). They are continuous BPSK carriers between the
+    Aero channels on 143.5 E, by all signs the GNSS correction services that
+    rent Inmarsat capacity. Their payload is encrypted, so the decoder stops
+    at the clear layer: lock, the 16-bit ID and the 7-bit field after it, the
+    payload's first bytes (and whether that start was seen before), and the
+    usual signal and FEC figures. `decaero-core/src/corr.rs` holds the frame
+    and what is known of it, `decaero-engine/src/corr.rs` the worker's path,
+    `--example corrrx` the bench receiver. **Done**; see below.
+
+## L-band correction carriers
+
+Worked out from `areo phone assignmeant.wav` (5 MS/s, centre 1545.000 MHz);
+the scripts and notes are in `research_notes/L-band 2438 baud carriers`. No
+spec was found, so all of this was measured on that recording.
+
+| Carrier (MHz) | Symbols/s | Pulse | Frame | ID seen |
+|---|---|---|---|---|
+| 1546.0181, 1546.6206 | 51200/21 = 2438.095 | RRC, about 0.4 | 8192 symbols, 3.36 s | 14CE (both) |
+| 1546.5806 | 2438.095 | RRC | 8192 symbols | E932 |
+| 1546.6006 | 25600/21 = 1219.048 | RRC | 8192 symbols, 6.72 s | 4088 |
+| 1546.2232, 1547.0306 | 1200 | RRC, about 0.4 | none fixed (packets) | – |
+
+- Framed carriers: a 64-symbol unique word, `C2B5D127` twice, uncoded. From
+  its last symbol on come 8128 symbols of the Aero code (K=7, 133 / 171) with
+  the encoder carried over from the frame before and flushed to zero: 4064
+  bits. Bits 0 to 15 are the same in every frame of a carrier, bits 16 to 22
+  are 0x7F at 2438 and 0 at 1219, then the payload, then at least 8 zero bits.
+  No CRC was found (16 and 32-bit CCITT, CRC-16 and CRC-32 tried at every
+  place near the end).
+- The payload is white (Berlekamp-Massey gives half the length), but some
+  frames on a carrier start with the same bytes as earlier ones, so messages
+  repeat. The log names a repeat ("same start as at m:ss").
+- The 1200 symbol/s carriers use the same code with the pair order swapped
+  and runs of coded zeros between packets of varying length. They get code
+  lock and figures only (`StreamCheck`).
+- Squared, plain BPSK gives one line at twice the carrier (Aero gives a pair),
+  and the envelope gives a line at the symbol rate: `acquire::find_bpsk`. A
+  worker that finds no Aero line pair tries this before giving up. The
+  survey also starts workers on carriers 2.2 to 5 kHz wide (with no Aero rate
+  to look for, they go straight to this), widest first, so the few always-on
+  correction carriers do not wait behind the 48-worker cap.
+- A found carrier shows as searching until a frame (or a piece with code lock)
+  comes, and is given up after about three frame times without one: a tone
+  next to a modulated neighbour passes the line test but never gives a frame.
+- On the recording, follow mode finds and locks all six (about 11 dB Eb/N0,
+  BER 2e-4), and `IQ/areo.wav` has one more, a 2438 carrier at +126.8 kHz.
+  Sensitivity has not been measured.
+
 ## Losing and finding sync
 
 The demodulator's frequency loop reads only a few hertz either way at the slow

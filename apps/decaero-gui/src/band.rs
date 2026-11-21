@@ -700,6 +700,7 @@ impl Band {
                 Kind::P(600) | Kind::Rt(600) => 900.0,
                 Kind::P(1200) | Kind::Rt(1200) => 1700.0,
                 Kind::Searching | Kind::NotAero => 1500.0,
+                Kind::Corr(r) => f64::from(r) * 1.8,
                 _ => 7000.0,
             };
             if c.carrier_hz + width / 2.0 < lo || c.carrier_hz - width / 2.0 > hi {
@@ -713,6 +714,7 @@ impl Band {
                 (Kind::C, true) if view.listening == Some(c.id) => GOOD,
                 (Kind::C, true) => VFO,
                 (Kind::P(_), true) => AMBER,
+                (Kind::Corr(_), true) => TRACE,
             };
             let a = mid(x_of(c.carrier_hz - width / 2.0), ppp);
             let b = mid(x_of(c.carrier_hz + width / 2.0), ppp).max(a + 3.0);
