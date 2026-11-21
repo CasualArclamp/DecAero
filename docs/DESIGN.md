@@ -521,6 +521,12 @@ still shows.
   8 days is some 6 MB.
 - Call log: `calls.csv` in the recordings folder, a line as each recording is
   closed (date, UTC time, seconds, MHz, offset, AES, aircraft, GES, file).
+- ACARS log (Rory, 2026-11-21): "save to file" beside "hide empty" writes
+  every ACARS message with text to `Documents/DecAero/acars/acars-DATE.txt`
+  (a file a UTC day, kept between runs as `acars_log` in the settings), one
+  message a line with `ICAO 407FCD`, registration and type, GES, MHz and the
+  title, then the text with its lines joined by ` | `, so a search for an
+  aircraft finds its messages whole. A recording is dated by its own clock.
 
 ## Feeds out
 
@@ -579,7 +585,8 @@ sideways (a Galaxy S25 Ultra: about 830 by 380 points), with the RTL-SDR
   drivers then open from the descriptor:
   - RTL-SDR: `rtl-sdr-rs` (`crates/decaero-radio/src/rtl_usb.rs`), which is
     the RTL-SDR driver on every system now: the Windows exe no longer wants
-    `RTLtlsdr.dll` (the dongle needs the WinUSB driver, Zadig). Built with
+    `RTL
+tlsdr.dll` (the dongle needs the WinUSB driver, Zadig). Built with
     its `rtl_sdr_blog` feature: the RTL-SDR Blog driver's PLL settings (full
     VCO current, 2.0 V drop-out), without which the R82xx's PLL does not
     hold lock at L-band (seen on a V4, 2026-11-21);
