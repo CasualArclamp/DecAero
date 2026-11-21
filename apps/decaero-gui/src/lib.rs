@@ -196,6 +196,9 @@ struct App {
     live: bool,
     /// Which aircraft the right-hand table shows.
     filter: Filter,
+    /// Leave out of the message log the messages that carry no text (most
+    /// are acknowledgements, label `_d`).
+    hide_empty: bool,
     /// Settings kept between runs, where they are kept (`None`: this run
     /// neither reads nor writes them), and when they were last looked at.
     prefs: prefs::Prefs,
@@ -468,6 +471,7 @@ impl App {
                 .map_or(String::new(), |(lo, hi)| format!("{lo:.0}:{hi:.0}")),
         );
         p.set("scan", self.scan);
+        p.set("hide_empty", self.hide_empty);
         p.set("volume", format!("{:.2}", self.volume));
         p.set(
             "tab",
@@ -529,6 +533,7 @@ impl App {
         if p.get("tab") == Some("signalling") {
             self.tab = Tab::Signalling;
         }
+        self.hide_empty = p.read("hide_empty").unwrap_or(false);
         self.filter = match p.get("aircraft") {
             Some("us") => Filter::Us,
             Some("military") => Filter::Military,
@@ -1663,6 +1668,12 @@ impl App {
             ui.label(RichText::new("Log").color(WHITE).size(14.0));
             ui.selectable_value(&mut self.tab, Tab::Messages, "Messages");
             ui.selectable_value(&mut self.tab, Tab::Signalling, "Signalling");
+            if self.tab == Tab::Messages {
+                ui.checkbox(&mut self.hide_empty, "hide empty")
+                    .on_hover_text(
+                        "Leave out messages with no text in them (acknowledgements and the like)",
+                    );
+            }
         });
         let want_messages = self.tab == Tab::Messages;
         // Signalling starts with the satellites the system table names:
@@ -1705,7 +1716,15 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let mut shown = 0;
-                for l in self.log.iter().rev().filter(|l| l.message == want_messages) {
+                let hide_empty = want_messages && self.hide_empty;
+                for l in self
+                    .log
+                    .iter()
+                    .rev()
+                    .filter(|l| l.message == want_messages)
+                    // Empty: not a letter or a digit in it (some carry a lone "=").
+                    .filter(|l| !(hide_empty && !l.text.chars().any(char::is_alphanumeric)))
+                {
                     shown += 1;
                     if shown > 300 {
                         break;
@@ -2506,6 +2525,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
                     aircraft_db.unwrap_or_else(aircraft::Lookup::default_path),
                 ),
                 filter: Filter::All,
+                hide_empty: false,
                 net_url: net_url
                     .clone()
                     .unwrap_or_else(|| "sdrpp://127.0.0.1:5259".to_string()),
