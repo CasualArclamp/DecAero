@@ -49,9 +49,14 @@ pub struct RtlSdr {
 /// Identify the RTL-SDR Blog model from the USB manufacturer and product strings.
 /// Exact match, like `rtlsdr_check_dongle_model` in the rtl-sdr-blog driver.
 pub(crate) fn detect_blog_model(manufact: Option<&str>, product: Option<&str>) -> BlogModel {
-    match (manufact, product) {
-        (Some("RTLSDRBlog"), Some("Blog V4")) => BlogModel::V4,
-        (Some("RTLSDRBlog"), Some("Blog V4L")) => BlogModel::V4L,
+    // Changed in DecAero's copy: a manufacturer name that could not be read
+    // (Windows often has none to give) no longer rules the dongle out; the
+    // product name alone is telling enough. A name that was read and is
+    // someone else's still does. Without this a V4 on Windows was run from
+    // the wrong tuner reference and its PLL never locked.
+    match (manufact.map(str::trim), product.map(str::trim)) {
+        (Some("RTLSDRBlog") | None, Some("Blog V4")) => BlogModel::V4,
+        (Some("RTLSDRBlog") | None, Some("Blog V4L")) => BlogModel::V4L,
         _ => BlogModel::None,
     }
 }
@@ -644,7 +649,9 @@ mod blog_model_tests {
 
     #[test]
     fn anything_else_is_not_a_blog_model() {
-        assert_eq!(blog_model(None, Some("Blog V4L")), BlogModel::None);
+        // Changed in DecAero's copy: an unreadable manufacturer name is let pass.
+        assert_eq!(blog_model(None, Some("Blog V4L")), BlogModel::V4L);
+        assert_eq!(blog_model(Some("Other"), Some("Blog V4")), BlogModel::None);
         assert_eq!(blog_model(Some("RTLSDRBlog"), None), BlogModel::None);
         assert_eq!(
             blog_model(Some("Realtek"), Some("RTL2838UHIDIR")),

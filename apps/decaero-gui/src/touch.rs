@@ -147,6 +147,16 @@ fn field(ui: &mut Ui, text: &str, hint: &str, width: f32) -> bool {
     response.clicked()
 }
 
+/// The version, and when this copy was built where the build script said
+/// (`DECAERO_BUILD`, month-day-hour-minute): two APKs of one version are
+/// otherwise impossible to tell apart on a phone.
+pub fn build_name() -> String {
+    match option_env!("DECAERO_BUILD") {
+        Some(stamp) => format!("DecAero {} build {stamp}", env!("CARGO_PKG_VERSION")),
+        None => format!("DecAero {}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
 fn heading(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
     ui.label(RichText::new(text).color(WHITE).size(14.0));
@@ -320,7 +330,7 @@ impl App {
                     WARN,
                 )
             } else if self.engine.is_none() {
-                ("no input: press Input".to_string(), DIM)
+                (format!("{} · no input: press Input", build_name()), DIM)
             } else {
                 let locked = v.channels.iter().filter(|c| c.locked).count();
                 let cpu: f32 = v.channels.iter().map(|c| c.cpu).sum::<f32>() + v.load;
@@ -671,7 +681,7 @@ impl App {
         for part in self.status_parts() {
             ui.add(egui::Label::new(RichText::new(part).color(DIM).size(11.5)).wrap());
         }
-        note(ui, format!("DecAero {}", env!("CARGO_PKG_VERSION")));
+        note(ui, build_name());
     }
 
     /// The on-screen keys, while a box is being filled in.

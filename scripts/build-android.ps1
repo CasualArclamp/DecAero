@@ -44,6 +44,13 @@ foreach ($tool in @(
 }
 $env:CMAKE_GENERATOR = 'Ninja'
 
+# When this copy was built: shown in the app (More, and the top bar before an
+# input is started) and put in the APK's name and version code, so a new
+# build is never mistaken for the last one and always installs over it.
+$stamp = Get-Date -Format 'MMdd-HHmm'
+$env:DECAERO_BUILD = $stamp
+$number = [int]((Get-Date) - (Get-Date '2026-01-01')).TotalMinutes
+
 # The Rust library, one per kind of processor, where Gradle picks them up.
 $libs = Join-Path $root 'apps\decaero-android\android\app\src\main\jniLibs'
 if (Test-Path $libs) { Remove-Item $libs -Recurse -Force }
@@ -55,7 +62,7 @@ if ($LASTEXITCODE -ne 0) { throw 'the Rust build failed' }
 # The APK around it.
 Push-Location (Join-Path $root 'apps\decaero-android\android')
 try {
-    gradle --no-daemon -q assembleRelease
+    gradle --no-daemon -q "-PbuildNumber=$number" "-PbuildStamp=$stamp" assembleRelease
     if ($LASTEXITCODE -ne 0) { throw 'the Gradle build failed' }
 } finally {
     Pop-Location
@@ -64,7 +71,9 @@ try {
 $version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^version = "([0-9.]+)"').Matches[0].Groups[1].Value
 $built = Join-Path $root 'apps\decaero-android\android\app\build\outputs\apk\release\app-release.apk'
 New-Item -ItemType Directory -Force (Join-Path $root 'exe') | Out-Null
-$name = if ($Emulator) { "DecAero-$version-with-x86_64.apk" } else { "DecAero-$version.apk" }
+$name = if ($Emulator) { "DecAero-$version-$stamp-with-x86_64.apk" } else { "DecAero-$version-$stamp.apk" }
+# Older builds would only be picked up by mistake.
+Get-ChildItem (Join-Path $root 'exe') -Filter 'DecAero-*.apk' | Remove-Item -Force
 $apk = Join-Path $root "exe\$name"
 Copy-Item $built $apk -Force
 $item = Get-Item $apk

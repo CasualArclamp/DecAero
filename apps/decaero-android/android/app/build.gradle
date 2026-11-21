@@ -22,8 +22,11 @@ android {
         // 34, not 35: from 35 a window is drawn under the status bar and the
         // camera cut-out whether it asks to be or not.
         targetSdk 34
-        versionCode parts[0] * 10000 + parts[1] * 100 + parts[2]
-        versionName cargoVersion
+        // The build script gives each build a number that only goes up
+        // (minutes since the start of 2026), so a newer build always installs
+        // over an older one of the same version.
+        versionCode project.hasProperty('buildNumber') ? (project.property('buildNumber') as int) : parts[0] * 10000 + parts[1] * 100 + parts[2]
+        versionName project.hasProperty('buildStamp') ? "${cargoVersion} build ${project.property('buildStamp')}" : cargoVersion
     }
 
     buildTypes {

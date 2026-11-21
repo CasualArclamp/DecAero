@@ -6,7 +6,9 @@
 # crate already has. Two small additions besides: the dongle's USB names can
 # be handed in (`hint_usb_strings`), for where the driver cannot read them
 # itself, and the tuner's PLL lock can be asked for (`pll_locked`). The
-# changed files (src/lib.rs, src/device/device_handle.rs,
+# A Blog V4 is also known by its product name alone when the manufacturer's
+# cannot be read (`detect_blog_model` in src/rtlsdr.rs). The
+# changed files (src/lib.rs, src/rtlsdr.rs, src/device/device_handle.rs,
 # src/tuners/r82xx.rs) say so where they differ; the rest is as published. The workspace's
 # `[patch.crates-io]` puts this copy in place of the published crate.
 [package]
