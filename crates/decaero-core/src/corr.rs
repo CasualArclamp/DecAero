@@ -16,7 +16,8 @@
 //! this module goes as far as the clear layer:
 //!
 //! * symbol rate 51200/21 or 25600/21 per second, BPSK, root raised cosine
-//!   (roll-off about 0.8 by the occupied bandwidth);
+//!   (roll-off about 0.4: the matched filter's Es/N0 peaks between 0.35
+//!   and 0.5);
 //! * a frame every 8192 symbols (3.36 s or 6.72 s);
 //! * the frame opens with a 64-symbol unique word, `C2B5D127` sent twice,
 //!   uncoded;
@@ -29,7 +30,7 @@
 //!   that are all ones on the 2438 carriers and all zeros on the 1219 one,
 //!   then the encrypted payload, then at least 8 zero tail bits.
 //!
-//! Another carrier there, 1200 symbol/s unfiltered BPSK with the same code
+//! Another carrier there, 1200 symbol/s BPSK (also RRC) with the same code
 //! but no fixed frame (packets with runs of zeros between them), is only
 //! checked for code lock: [`StreamCheck`].
 
@@ -54,14 +55,13 @@ pub const TAIL_START: usize = FRAME_BITS - 8;
 pub const FRAMED_RATES: [f64; 2] = [51_200.0 / 21.0, 25_600.0 / 21.0];
 /// Every rate the correction search looks for (the 1200 is unframed).
 pub const ALL_RATES: [f64; 3] = [51_200.0 / 21.0, 25_600.0 / 21.0, 1200.0];
-/// Pulse roll-off for the demodulator: root raised cosine for the framed
-/// carriers, unfiltered (0) for the 1200 symbol/s one.
-pub fn roll_off(symbol_rate: f64) -> f32 {
-    if (symbol_rate - 1200.0).abs() < 5.0 {
-        0.0
-    } else {
-        0.8
-    }
+/// Pulse roll-off for the demodulator's root raised cosine. Tried 0 (an
+/// unfiltered pulse) to 1.0 on `areo phone assignmeant.wav`: the measured
+/// Es/N0 is best from 0.35 to 0.5 on all three rates (by 1.7 dB over an
+/// unfiltered pulse on the 1200 carriers, whose constellation then split
+/// each point in three; by 0.8 dB over 0.8 on the 2438 ones).
+pub fn roll_off(_symbol_rate: f64) -> f32 {
+    0.4
 }
 /// Whether a symbol rate is one of the framed kind.
 pub fn framed(symbol_rate: f64) -> bool {
