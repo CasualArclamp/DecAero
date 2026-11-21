@@ -1,6 +1,6 @@
 // made by CasualArclamp
 //! Run the engine over a recording as fast as it goes and print what it
-//! found: `cargo run --release -p decaero-engine --example headless -- FILE.wav [CENTRE_HZ] [--no-follow] [--add HZ:WIDTH]...`
+//! found: `cargo run --release -p decaero-engine --example headless -- FILE.wav [CENTRE_HZ] [--no-follow] [--noisy-osc] [--add HZ:WIDTH]...`
 
 use decaero_engine::{Command, Engine, FileSource, Options};
 
@@ -11,6 +11,8 @@ fn main() {
     // `--add HZ:WIDTH` draws a decoder's box by hand, as a drag in the GUI
     // does; `--no-follow` leaves everything else alone.
     let follow = !args.iter().any(|a| a == "--no-follow");
+    // `--noisy-osc`: as for an RTL-SDR's recordings (Options::noisy_oscillator).
+    let noisy_oscillator = args.iter().any(|a| a == "--noisy-osc");
     // Feeds out: `--json-udp HOST:PORT`, `--sbs listen:PORT|HOST:PORT`,
     // `--station NAME`.
     let value = |name: &str| {
@@ -57,6 +59,7 @@ fn main() {
     let engine = Engine::start(
         source,
         Options {
+            noisy_oscillator,
             realtime: false,
             center_hz,
             follow,

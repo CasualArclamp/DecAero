@@ -549,3 +549,113 @@ Still to do, roughly in this order:
 - Tone frames played: needs a recording with real ones (see above).
 - decsat-server's compressed link as an input.
 - A test modulator crate, so the sensitivity figures are regression tests.
+
+## Android and the touch layout
+
+Asked for 2026-11-21: an Android app, easy with fingers, for a phone held
+sideways (a Galaxy S25 Ultra: about 830 by 380 points), with the RTL-SDR
+(V3, V4) and the Airspy / HydraSDR on the USB socket.
+
+- **One program.** The window's code is a library (`apps/decaero-gui/src/lib.rs`);
+  the desktop's `main.rs` and the Android app (`apps/decaero-android`, a
+  `NativeActivity` that loads the Rust library) both call `decaero_gui::run`.
+  What differs comes in a `Platform`: touch layout on, where files go, the
+  system's file chooser, Android's app handle.
+- **The layout** is `touch.rs`: a rail of buttons, one side panel at a time,
+  the desktop's own panels inside with larger controls (`touch::style`). The
+  constellation is small there (a third of the height) with the margin bar
+  and a cut-down channel list beside it, so the decoder's figures have room.
+  Boxes that take text open keys of their own: a native window is not
+  reliably given the phone's keyboard, and what is typed is a frequency or an
+  address. `--touch --size 832x384 [--panel NAME] [--keys]` shows it on a
+  desktop, for screenshots.
+- **The band with fingers** (`band.rs`): two fingers pinch and move; what one
+  finger does is `Band::drag` (move, draw a decoder's box, tune), set by the
+  buttons on the band. Follow voice's range is the same box.
+- **USB radios.** Android lets a program open a USB device only through
+  `UsbManager`, after its permission dialog; native code cannot list devices.
+  `MainActivity.openUsb` does that and returns the file descriptor;
+  `decaero_radio::set_usb_opener` is how the radio crate reaches it. The
+  drivers then open from the descriptor:
+  - RTL-SDR: `rtl-sdr-rs` (`crates/decaero-radio/src/rtl_usb.rs`), which is
+    the RTL-SDR driver on every system now: the Windows exe no longer wants
+    `RTLtlsdr.dll` (the dongle needs the WinUSB driver, Zadig). Built with
+    its `rtl_sdr_blog` feature: the RTL-SDR Blog driver's PLL settings (full
+    VCO current, 2.0 V drop-out), without which the R82xx's PLL does not
+    hold lock at L-band (seen on a V4, 2026-11-21);
+  - Airspy / HydraSDR: DecSAT's driver over `libairspy-rs`, as on the desktop.
+  Both crates needed a small change to build for Android, so patched copies
+  are in `vendor/` (each `Cargo.toml` says what changed) and the workspace's
+  `[patch.crates-io]` uses them. Worth offering upstream.
+- **Files**: the app's own folder on shared storage (`Platform::data_dir`). A
+  picked recording arrives as an open descriptor and is read as
+  `/proc/self/fd/N`.
+- **Building**: `scripts/build-android.ps1` (cargo-ndk, then Gradle in
+  `apps/decaero-android/android`). The APK is signed with the building
+  machine's debug key: an APK built on another machine will not install over
+  it without uninstalling first. `targetSdk` is 34 so the window is kept off
+  the status bar and the camera cut-out.
+- **Unattended**: `adb shell "am start -n com.casualarclamp.decaero/.MainActivity
+  --es args 'FILE.wav --center 1545.0'"` passes a command line;
+  `adb logcat -s DecAero` shows what the program prints.
+
+Checked 2026-11-21 in the emulator (Android 15, x86_64) on `areo.wav`: all
+twenty carriers lock, the panels, the keys, the zoom buttons, a panel's
+scrolling, the file chooser and the answer to Start radio with no radio
+plugged in. Not checked: any real radio on a phone, sound out, pinch (the
+emulator was driven by single taps), a real phone's speed.
+
+Not done: running in the background, a notification for calls, CI and a
+release job for the APK, the other radios over USB (HackRF, Pluto).
+
+## A wandering receiver
+
+Seen 2026-11-21 on an RTL-SDR Blog V4 (phone and PC alike): P 600 and P 1200
+carriers of 4 to 5 dB Eb/N0 would not stay locked, their constellations a
+ring. Nothing was short of time (8 ms a frame, 13 % of a core, no blocks
+lost). Two recordings made with the dongle on the PC, bias tee on
+(`out/v4.wav`, 47 s from a cold start, and `out/v4long.wav`, 217 s; neither
+committed) showed why:
+
+- everything that comes through the tuner moves together: some 150 Hz in the
+  first seconds after the radio starts, then on and on by 10 Hz or so from
+  one five seconds to the next, for as long as was recorded (a line tracked
+  with an FFT every 5 s). A spur made inside the dongle after the tuner
+  stayed where it was in the first recording, so it is not the samples;
+- `scripts/line_width.py` squares a P channel, which gives two lines half the
+  bit rate either side: on a HydraSDR recording 84 % of a line's power is
+  within 10 Hz, on the V4's 14 %.
+
+Whether that is the tuner's synthesiser, its reference being pulled by the
+supply, or the room (the aerial was held in a hand indoors) was not
+separated; the receiver has to cope either way. What was changed, scored by
+the frames with a good CRC over every carrier in a recording (`headless`,
+follow mode):
+
+| | v4long | v4 | areo (HydraSDR) |
+|---|---|---|---|
+| as it was | 74.6 % | 34.2 % | 85.1 % |
+| frequency loop: drift term, more gain on a large error | 81.4 % | 38.4 % | 85.8 % |
+| and phase every 32 bits at 600 and 1200 bit/s | 92.8 % | 88.3 % | 85.9 % |
+
+- **The frequency loop** (`decaero-dsp/src/demod.rs`) took a tenth of its
+  error a block. It now takes more the larger the error (half at 2 Hz), turns
+  its averaged measurement back by what it has just corrected, and learns a
+  rate of drift that it adds every block. On the test modulator
+  (`a_drifting_carrier_is_followed`) a steady carrier's bit errors are as
+  before (10.8 % at 1 dB Es/N0, 4.5 % at 3 dB) and 3 Hz/s, which gave 24 %
+  errors at 5 dB, gives 1.7 %. For every input.
+- **Phase more often** (`set_noisy_oscillator`, `Options::noisy_oscillator`):
+  the carrier's phase was measured once a block of 64 bits (600 bit/s) or
+  128 (1200), about a tenth of a second, and drawn straight between; that is
+  now 32 bits for both. On a steady receiver it costs a little at the very
+  bottom (bit errors 10.8 % to 11.4 % at 1 dB Es/N0, 4.5 % to 4.6 % at 3 dB),
+  so it is on only for the RTL-SDR, or with `--noisy-osc` for a recording
+  made with one. Shorter still was better on these recordings at 600 bit/s
+  (24 bits: 96 %) but fell apart on the test modulator under 3 dB.
+
+Still to do: tell a wandering receiver from a steady one by measuring it
+(the scatter of the quarter-block phases) in place of going by the radio's
+name; measure the phase on part-blocks while timing and frequency keep the
+whole block, which should allow 16 bits at 600 bit/s; find out what moves
+the V4's tuner.

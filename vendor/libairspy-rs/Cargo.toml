@@ -1,0 +1,34 @@
+# libairspy-rs 0.2.1 (https://github.com/jasonherald/libairspy-rs, BSD-3-Clause
+# AND MIT), kept here with one addition: on Android and Linux a device can be
+# opened from a file descriptor the system hands over (`offer_fd`,
+# `Device::open_fd` in src/device.rs). Android does not let a program find
+# USB devices by itself. The workspace's `[patch.crates-io]` puts this copy
+# in place of the published crate, so DecSAT's Airspy driver uses it too.
+[package]
+name = "libairspy-rs"
+version = "0.2.1"
+description = "Pure-Rust port of libairspy — Airspy R2/Mini USB driver, no C library required."
+edition = "2024"
+rust-version = "1.95"
+license = "BSD-3-Clause AND MIT"
+repository = "https://github.com/jasonherald/libairspy-rs"
+readme = "README.md"
+publish = false
+
+[lib]
+name = "libairspy_rs"
+path = "src/lib.rs"
+
+[dependencies]
+nusb = "0.2.7"
+thiserror = "2"
+tracing = "0.1"
+futures-core = { version = "0.3", optional = true }
+tokio = { version = "1", default-features = false, features = ["sync", "rt"], optional = true }
+async-channel = { version = "2", optional = true }
+blocking = { version = "1", optional = true }
+
+[features]
+default = []
+tokio = ["dep:tokio", "dep:futures-core"]
+smol = ["dep:blocking", "dep:async-channel", "dep:futures-core"]

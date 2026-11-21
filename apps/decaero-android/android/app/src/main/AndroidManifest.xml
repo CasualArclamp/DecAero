@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- made by CasualArclamp -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Network inputs (SDR++ server, plain I/Q), the feeds out, and the
+         aircraft database when asked for. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- A radio on the USB socket. Not required: the app also plays recordings. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <application
+        android:label="DecAero"
+        android:icon="@drawable/ic_launcher"
+        android:hasCode="true"
+        android:theme="@style/DecAero">
+        <!-- Sideways only; a change of size or a USB plug must not restart
+             the native program. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|smallestScreenSize">
+            <!-- The Rust library to load: libdecaero_android.so. -->
+            <meta-data android:name="android.app.lib_name" android:value="decaero_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Offered when one of the radios in res/xml/radios.xml is
+                 plugged in; saying yes there also gives the permission. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/radios" />
+        </activity>
+    </application>
+</manifest>

@@ -13,7 +13,7 @@
 //! * carrier phase: half the angle of that sum of squares, interpolated
 //!   from block to block;
 //! * carrier frequency: the phase step between blocks, fed back slowly to
-//!   the oscillator.
+//!   the oscillator, together with the rate it is found to be moving at.
 //!
 //! The acquisition (`acquire::find`) hands over a carrier within a hertz or
 //! so, which is all the feed-forward stages need.
@@ -51,6 +51,28 @@ impl Modulation {
     }
 }
 
+/// The share of each block's frequency error that goes into the drift.
+/// With the tenth applied at once this gives a loop a little over critically
+/// damped: it settles on a ramp in some forty blocks without ringing.
+const DRIFT_GAIN: f64 = 0.002;
+
+/// The receiver's own oscillator wanders by hertz within a tenth of a
+/// second (an RTL-SDR at L-band: see docs/DESIGN.md, "A wandering receiver").
+static NOISY_OSCILLATOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say whether the input comes from a receiver with a wandering oscillator.
+/// Demodulators made after this measure the carrier's phase four times (at
+/// 600 bit/s: twice) as often at 600 and 1200 bit/s. That follows the wander;
+/// on a steady receiver it would only cost a little at the very weakest
+/// signals (bit errors 10.8 % to 11.4 % at 1 dB Es/N0), so it is off unless
+/// asked for.
+///
+/// Rust note: an atomic can be read and written from any thread without a
+/// lock; `Relaxed` is enough for a flag nothing else is ordered against.
+pub fn set_noisy_oscillator(on: bool) {
+    NOISY_OSCILLATOR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Trial timing offsets per bit.
 const TRIALS: usize = 8;
 
@@ -81,6 +103,10 @@ pub struct Demod {
     // Oscillator taking out the carrier offset.
     nco_phase: f64,
     nco_hz: f64,
+    /// How fast the carrier is moving, Hz a block, as the frequency loop
+    /// has learnt it: added to the oscillator every block, so a steady
+    /// drift is followed with no standing error.
+    drift_hz: f64,
     // Matched filter.
     taps: Vec<f32>,
     tail: Vec<Complex32>,
@@ -170,6 +196,13 @@ impl Demod {
             5000..9000 => 512,
             _ => 256,
         };
+        // A receiver whose oscillator wanders (see `set_noisy_oscillator`)
+        // has its phase measured every 32 bits at the slow rates: 53 ms at
+        // 600 bit/s, 27 ms at 1200.
+        let block = match bit_rate as u32 {
+            0..5000 if NOISY_OSCILLATOR.load(std::sync::atomic::Ordering::Relaxed) => 32,
+            _ => block,
+        };
         Self {
             modulation,
             bit_rate,
@@ -178,6 +211,7 @@ impl Demod {
             block,
             nco_phase: 0.0,
             nco_hz: offset_hz,
+            drift_hz: 0.0,
             tail: vec![Complex32::default(); taps.len() - 1],
             taps,
             hist: Vec::new(),
@@ -207,6 +241,7 @@ impl Demod {
     /// (it reads only a few hertz either way at the slow rates).
     pub fn retune(&mut self, offset_hz: f64) {
         self.nco_hz = offset_hz;
+        self.drift_hz = 0.0;
         self.freq_vector = Complex32::default();
         self.status.offset_hz = offset_hz;
     }
@@ -427,7 +462,23 @@ impl Demod {
             let per_quarter =
                 0.5 * f64::from(self.freq_vector.im).atan2(f64::from(self.freq_vector.re));
             let hz = per_quarter / (TAU * (b / 4) as f64 / self.bit_rate);
-            self.nco_hz += 0.1 * hz;
+            // A tenth of the error at once, more of it the larger it is (half
+            // at 2 Hz and over: a carrier that has got away is caught in a
+            // block or two, while one that is held is steered as gently as
+            // before), and a little into the drift, which is then added
+            // every block (a second-order loop: a carrier moving steadily is
+            // followed without lagging behind it). The drift is held to
+            // about 6 Hz a second, so noise cannot send the loop running.
+            let limit = 6.0 * b as f64 / self.bit_rate;
+            self.drift_hz = (self.drift_hz + DRIFT_GAIN * hz).clamp(-limit, limit);
+            let gain = (0.1 + 0.2 * hz.abs()).min(0.5);
+            let moved = gain * hz + self.drift_hz;
+            self.nco_hz += moved;
+            // What was measured is now partly put right: turn the averaged
+            // measurement back by as much, or the loop would act on the same
+            // error again next block.
+            let turn = 2.0 * TAU * moved * (b / 4) as f64 / self.bit_rate;
+            self.freq_vector *= Complex32::from_polar(1.0, -turn as f32);
             self.status.offset_hz = self.nco_hz;
             self.status.clock_ppm = self.timing_sum;
             self.theta_before = Some(self.theta_held);
@@ -518,6 +569,69 @@ mod tests {
             st.es_n0_db
         );
         assert!((st.offset_hz - 0.8).abs() < 0.5, "offset {}", st.offset_hz);
+    }
+
+    /// Errors in `soft` against `bits` from bit `from` on, at the best lag
+    /// and sense, as a fraction.
+    fn error_rate(soft: &[f32], bits: &[u8], from: usize) -> f64 {
+        let hard: Vec<u8> = soft.iter().map(|&s| u8::from(s > 0.0)).collect();
+        let to = hard.len().min(bits.len()) - 8;
+        let mut best = usize::MAX;
+        for lag in 0..8 {
+            let wrong = (from..to).filter(|&i| hard[i] != bits[i + lag]).count();
+            best = best.min(wrong.min(to - from - wrong));
+        }
+        best as f64 / (to - from) as f64
+    }
+
+    /// MSK at `bit_rate` and 5 dB Es/N0 whose carrier moves at `hz_per_s`,
+    /// as a receiver's oscillator does while it warms up; the error rate.
+    fn drifting(bit_rate: u32, hz_per_s: f64, seconds: f64) -> (f64, f64) {
+        let mut seed = 1234;
+        let n = (seconds * f64::from(bit_rate)) as usize;
+        let bits: Vec<u8> = (0..n).map(|_| (lcg(&mut seed) >> 31) as u8).collect();
+        let sps = 8;
+        let rate = f64::from(bit_rate) * sps as f64;
+        let mut signal = msk(&bits, sps, 0.0);
+        let esn0 = 10f32.powf(0.5);
+        let sigma = (sps as f32 / (2.0 * esn0)).sqrt();
+        for (i, s) in signal.iter_mut().enumerate() {
+            let t = i as f64 / rate;
+            // A frequency ramp is a phase that grows as the square of time.
+            let phase = PI * hz_per_s * t * t;
+            *s *= Complex32::new(phase.cos() as f32, phase.sin() as f32);
+            *s += Complex32::new(sigma * gauss(&mut seed), sigma * gauss(&mut seed));
+        }
+        let mut demod = Demod::new(Modulation::ABpsk, bit_rate, rate, 0.0);
+        let mut soft = Vec::new();
+        for chunk in signal.chunks(1000) {
+            demod.process(chunk, &mut soft);
+        }
+        (
+            error_rate(&soft, &bits, 2 * bit_rate as usize),
+            demod.status().offset_hz,
+        )
+    }
+
+    /// A cheap receiver's oscillator drifts a hertz or two a second at
+    /// L-band while it warms up (seen on an RTL-SDR: 1.3 Hz/s). The carrier
+    /// must be followed through that with next to no loss.
+    #[test]
+    fn a_drifting_carrier_is_followed() {
+        for bit_rate in [600, 1200] {
+            let (still, _) = drifting(bit_rate, 0.0, 40.0);
+            for hz_per_s in [1.5, -3.0] {
+                let (moving, at) = drifting(bit_rate, hz_per_s, 40.0);
+                println!(
+                    "{bit_rate} bit/s, {hz_per_s} Hz/s: {still:.4} still, {moving:.4} moving, at {at:.1} Hz"
+                );
+                assert!(
+                    moving < still + 0.01,
+                    "{bit_rate} bit/s at {hz_per_s} Hz/s: {moving:.4} against {still:.4} still"
+                );
+                assert!((at - hz_per_s * 40.0).abs() < 3.0, "ended at {at} Hz");
+            }
+        }
     }
 
     /// Offset QPSK is shown as plain QPSK's four corners, not as two

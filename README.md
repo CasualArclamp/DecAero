@@ -106,6 +106,34 @@ cargo run --release -p decaero-gui -- RECORDING.wav --center 1545.0
 CMake must be on the PATH (libopus is built from source). The portable exe:
 `powershell -ExecutionPolicy Bypass -File scripts/build-portable.ps1`.
 
+## Android
+
+The same program with a layout for fingers, for a phone held sideways:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1
+```
+
+makes `exe/DecAero-<version>.apk` (the script's first lines say what it needs).
+Copy it to the phone and open it to install; Android asks once to allow
+installing from that source.
+
+- The band has the screen; the buttons down the left open one panel beside it.
+  On the band two fingers pinch to zoom; one finger moves the view, draws a
+  new decoder or tunes, as the buttons at its foot say.
+- **Input** starts a radio on the USB socket (an RTL-SDR, V3 and V4 among
+  them, or an Airspy / HydraSDR, on an OTG lead), connects to an SDR++ server
+  or a plain I/Q stream, or opens a recording. Android asks before the app may
+  use a radio. Receive only; the bias tee is off unless ticked.
+- Settings, the aircraft database, call recordings and I/Q recordings are in
+  `Android/data/com.casualarclamp.decaero/files` on the phone's storage.
+- It runs while it is on screen (the screen is kept on), not in the background.
+
+Tried in the Android emulator on a recording. **The USB radios have not been
+tried on a real phone or a real radio yet.**
+
+`decaero-gui --touch --size 832x384` shows the same layout on a desktop.
+
 ## Credits and licence
 
 Built on the work of JAERO, libaeroambe and mbelib: see [NOTICE](NOTICE),

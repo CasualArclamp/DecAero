@@ -2,6 +2,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*"]
+# A patched copy of a published crate (see its Cargo.toml), not ours to lint.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.3.1"
@@ -27,6 +29,11 @@ opt-level = 3
 [profile.release]
 debug = "line-tables-only"
 lto = "thin"
+
+# Two USB radio drivers changed to work on Android (each Cargo.toml says how).
+[patch.crates-io]
+libairspy-rs = { path = "vendor/libairspy-rs" }
+rtl-sdr-rs = { path = "vendor/rtl-sdr-rs" }
 
 [workspace.lints.clippy]
 # `chunks_exact(2)` reads better than `as_chunks::<2>().0` to someone new to Rust.

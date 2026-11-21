@@ -128,6 +128,10 @@ pub struct Options {
     /// Where the voice frames of 21000 bit/s calls are written as they come
     /// (before the speech decoder), a file a call; nowhere if `None`.
     pub raw_voice_dir: Option<std::path::PathBuf>,
+    /// The input is a receiver whose oscillator wanders (an RTL-SDR): the
+    /// slow channels' carrier phase is measured more often
+    /// (`decaero_dsp::demod::set_noisy_oscillator`).
+    pub noisy_oscillator: bool,
     /// Write every such call's frames; if not, only those of calls that
     /// are not speech (fax, data).
     pub raw_voice_all: bool,
@@ -146,6 +150,7 @@ impl Default for Options {
             follow: true,
             follow_range: None,
             raw_voice_dir: None,
+            noisy_oscillator: false,
             raw_voice_all: false,
             carrier_db: 4.0,
             feeds: feed::FeedOptions::default(),
@@ -392,6 +397,9 @@ pub struct Engine {
 
 impl Engine {
     pub fn start(source: Box<dyn Source>, options: Options) -> Self {
+        // Before any decoder is made. (One setting for the program: there is
+        // one input at a time.)
+        decaero_dsp::demod::set_noisy_oscillator(options.noisy_oscillator);
         let shared = Arc::new(Shared {
             view: Mutex::new(View {
                 source: source.describe(),

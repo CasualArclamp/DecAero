@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- made by CasualArclamp -->
+<resources>
+    <!-- No title bar, no status bar, DecSAT's background while it loads.
+         The camera cut-out is left alone (the default in full screen). -->
+    <style name="DecAero" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:navigationBarColor">@color/background</item>
+    </style>
+    <color name="background">#111112</color>
+</resources>

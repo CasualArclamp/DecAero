@@ -107,6 +107,9 @@ impl Recorder {
 
     /// Where recordings go unless told otherwise: Documents\DecAero\calls.
     pub fn default_dir() -> PathBuf {
+        if let Some(dir) = crate::data_dir() {
+            return dir.join("calls");
+        }
         let home = std::env::var_os("USERPROFILE")
             .or_else(|| std::env::var_os("HOME"))
             .map(PathBuf::from);
