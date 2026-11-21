@@ -12,6 +12,7 @@
 //!
 //! `decaero-gui [--no-follow] [--noisy-osc] [--touch [--panel chan|log|planes|calls|input|more] [--keys]] [--size WxH] [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--follow-range LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
+mod acarslog;
 mod activity;
 mod aircraft;
 mod audio;
@@ -199,6 +200,9 @@ struct App {
     /// Leave out of the message log the messages that carry no text (most
     /// are acknowledgements, label `_d`).
     hide_empty: bool,
+    /// ACARS messages with text written to a file a day as they come
+    /// (`None`: the box is not ticked).
+    acars_log: Option<acarslog::AcarsLog>,
     /// Settings kept between runs, where they are kept (`None`: this run
     /// neither reads nor writes them), and when they were last looked at.
     prefs: prefs::Prefs,
@@ -472,6 +476,7 @@ impl App {
         );
         p.set("scan", self.scan);
         p.set("hide_empty", self.hide_empty);
+        p.set("acars_log", self.acars_log.is_some());
         p.set("live_lookup", self.aircraft.live());
         p.set("volume", format!("{:.2}", self.volume));
         p.set(
@@ -535,6 +540,9 @@ impl App {
             self.tab = Tab::Signalling;
         }
         self.hide_empty = p.read("hide_empty").unwrap_or(false);
+        if p.read("acars_log").unwrap_or(false) && self.acars_log.is_none() {
+            self.acars_log = Some(acarslog::AcarsLog::new(acarslog::AcarsLog::default_dir()));
+        }
         // On unless turned off: asked for (2026-11-21) to correct the
         // database's military marks.
         self.aircraft
@@ -672,6 +680,22 @@ impl App {
         }
         for line in engine.log_after(self.log_seen) {
             self.log_seen = line.seq;
+            if let Some(log) = &mut self.acars_log
+                && acarslog::AcarsLog::wanted(&line)
+            {
+                let info = line.aes.map(|a| self.aircraft.get(a)).unwrap_or_default();
+                let mhz = match self.view.channels.iter().find(|c| c.id == line.channel) {
+                    Some(c) if self.view.center_hz > 0.0 => {
+                        (self.view.center_hz + c.carrier_hz) / 1e6
+                    }
+                    _ => 0.0,
+                };
+                // When it was heard: the recording's own clock for a file.
+                if let Err(e) = log.write(self.file_began + line.seconds, &line, &info, mhz) {
+                    self.error = Some(e);
+                    self.acars_log = None;
+                }
+            }
             self.log.push_back(line);
         }
         while self.log.len() > 3000 {
@@ -1678,6 +1702,22 @@ impl App {
                     .on_hover_text(
                         "Leave out messages with no text in them (acknowledgements and the like)",
                     );
+                let mut saving = self.acars_log.is_some();
+                let dir = self
+                    .acars_log
+                    .as_ref()
+                    .map_or_else(acarslog::AcarsLog::default_dir, |l| l.dir().to_path_buf());
+                let hint = format!(
+                    "Write every ACARS message with text to a file a day in {}, one message a line with the aircraft's ICAO address (search for ICAO 407FCD, a registration or any word)",
+                    dir.display()
+                );
+                let text = match &self.acars_log {
+                    Some(l) if l.written > 0 => format!("save to file ({})", l.written),
+                    _ => "save to file".to_string(),
+                };
+                if ui.checkbox(&mut saving, text).on_hover_text(hint).changed() {
+                    self.acars_log = saving.then(|| acarslog::AcarsLog::new(dir));
+                }
             }
         });
         let want_messages = self.tab == Tab::Messages;
@@ -2547,6 +2587,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
                 ),
                 filter: Filter::All,
                 hide_empty: false,
+                acars_log: None,
                 net_url: net_url
                     .clone()
                     .unwrap_or_else(|| "sdrpp://127.0.0.1:5259".to_string()),

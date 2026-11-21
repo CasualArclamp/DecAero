@@ -566,6 +566,12 @@ still shows.
   8 days is some 6 MB.
 - Call log: `calls.csv` in the recordings folder, a line as each recording is
   closed (date, UTC time, seconds, MHz, offset, AES, aircraft, GES, file).
+- ACARS log (Rory, 2026-11-21): "save to file" beside "hide empty" writes
+  every ACARS message with text to `Documents/DecAero/acars/acars-DATE.txt`
+  (a file a UTC day, kept between runs as `acars_log` in the settings), one
+  message a line with `ICAO 407FCD`, registration and type, GES, MHz and the
+  title, then the text with its lines joined by ` | `, so a search for an
+  aircraft finds its messages whole. A recording is dated by its own clock.
 
 ## Feeds out
 
