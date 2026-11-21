@@ -1665,6 +1665,40 @@ impl App {
             ui.selectable_value(&mut self.tab, Tab::Signalling, "Signalling");
         });
         let want_messages = self.tab == Tab::Messages;
+        // Signalling starts with the satellites the system table names:
+        // where each one's P channels are.
+        if !want_messages && !self.view.satellites.is_empty() {
+            egui::Grid::new("satellites")
+                .num_columns(4)
+                .spacing([10.0, 1.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for h in ["sat", "longitude", "P channels (Psmc), MHz", "heard"] {
+                        ui.label(RichText::new(h).color(DIM).size(11.0));
+                    }
+                    ui.end_row();
+                    for (s, seconds) in &self.view.satellites {
+                        ui.label(RichText::new(s.id.to_string()).monospace().size(11.0));
+                        ui.label(RichText::new(s.longitude_text()).color(GOOD).size(11.0));
+                        let mut psmc = format!("{:.4}", s.psmc_mhz[0]);
+                        if s.psmc_mhz[1] > 0.0 {
+                            psmc.push_str(&format!("  {:.4}", s.psmc_mhz[1]));
+                        }
+                        if s.spot_beam.iter().any(|&b| b) {
+                            psmc.push_str("  spot");
+                        }
+                        ui.label(RichText::new(psmc).monospace().size(11.0));
+                        ui.label(
+                            RichText::new(clock(*seconds))
+                                .color(DIM)
+                                .monospace()
+                                .size(11.0),
+                        );
+                        ui.end_row();
+                    }
+                });
+            ui.separator();
+        }
         egui::ScrollArea::vertical()
             .id_salt("log")
             .max_height(height)

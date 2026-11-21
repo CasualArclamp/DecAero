@@ -277,12 +277,58 @@ pub enum Meaning {
         bit_rate: u32,
         spot_beam: bool,
     },
-    /// The satellite: longitude east in degrees and its P channel(s).
-    Satellite {
-        id: u8,
-        longitude: f64,
-        psmc_mhz: [f64; 2],
-    },
+    /// One entry of the system table's satellite list (JAERO
+    /// `AES_system_table_broadcast_satellite_identification`).
+    Satellite(Satellite),
+}
+
+/// A satellite as the system table describes it: every P channel carries
+/// the whole list, a unit a satellite, so one P channel tells where the
+/// others' P channels are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Satellite {
+    /// The satellite's number in the table.
+    pub id: u8,
+    /// Its place in the table's cycle.
+    pub seq: u8,
+    /// Longitude east, degrees (0 to 360).
+    pub longitude: f64,
+    /// Its P channels (Psmc), MHz, 0 where there is no second one, and
+    /// whether each is in a spot beam.
+    pub psmc_mhz: [f64; 2],
+    pub spot_beam: [bool; 2],
+}
+
+impl Satellite {
+    /// "142.5E" or "99W".
+    pub fn longitude_text(&self) -> String {
+        if self.longitude > 180.0 {
+            format!("{}W", 360.0 - self.longitude)
+        } else {
+            format!("{}E", self.longitude)
+        }
+    }
+
+    /// One line, as JAERO prints it.
+    pub fn describe(&self) -> String {
+        let beam = |on: bool| if on { " (spot beam)" } else { "" };
+        let mut text = format!(
+            "satellite ID {} (long {})  seq {}  Psmc1 {:.4} MHz{}",
+            self.id,
+            self.longitude_text(),
+            self.seq,
+            self.psmc_mhz[0],
+            beam(self.spot_beam[0])
+        );
+        if self.psmc_mhz[1] > 0.0 {
+            text.push_str(&format!(
+                "  Psmc2 {:.4} MHz{}",
+                self.psmc_mhz[1],
+                beam(self.spot_beam[1])
+            ));
+        }
+        text
+    }
 }
 
 /// Read the fields of a P channel unit (JAERO `AeroL::Decode`).
@@ -317,8 +363,12 @@ pub fn p_meaning(b: &[u8; SU_BYTES]) -> Meaning {
                 spot_beam: b[8] & 0x80 != 0,
             }
         }
-        0x0C => Meaning::Satellite {
+        // JAERO `AeroL::Decode`, satellite identification: sequence and
+        // the satellite's number in bytes 2 and 3, longitude in 1.5 degree
+        // steps in byte 5, two channel numbers with a spot beam bit each.
+        0x0C => Meaning::Satellite(Satellite {
             id: ((b[2] << 4) & 0x30) | (b[3] >> 4),
+            seq: (b[2] >> 2) & 0x3f,
             longitude: f64::from(b[5]) * 1.5,
             psmc_mhz: [
                 rx_mhz(word(6)),
@@ -328,7 +378,8 @@ pub fn p_meaning(b: &[u8; SU_BYTES]) -> Meaning {
                     rx_mhz(word(8))
                 },
             ],
-        },
+            spot_beam: [b[6] & 0x80 != 0, b[8] & 0x80 != 0],
+        }),
         0x10..=0x17 | 0x21 | 0x30 | 0x51 | 0x60..=0x62 | 0x71 => Meaning::Aircraft {
             aes: aes(b),
             ges: b[4],
@@ -494,6 +545,47 @@ pub fn acars(data: &[u8]) -> Option<Acars> {
 
 #[cfg(test)]
 mod tests {
+    /// Units from a P channel as JAERO printed them (sent in by Rory,
+    /// 2026-11-21): every field must come out as it did there.
+    #[test]
+    fn the_satellite_table_reads_as_jaero_reads_it() {
+        let unit = |head: [u8; 10]| {
+            let mut b = [0u8; super::SU_BYTES];
+            b[..10].copy_from_slice(&head);
+            match super::p_meaning(&b) {
+                super::Meaning::Satellite(s) => s,
+                other => panic!("{other:?}"),
+            }
+        };
+        let s = unit([0x0C, 0x87, 0x1C, 0x0B, 0x08, 0xAE, 0x36, 0xB8, 0x37, 0x02]);
+        assert_eq!((s.id, s.seq, s.longitude_text()), (0, 7, "99W".to_string()));
+        assert!((s.psmc_mhz[0] - 1545.02).abs() < 1e-6 && (s.psmc_mhz[1] - 1545.205).abs() < 1e-6);
+        let s = unit([0x0C, 0x87, 0x14, 0x2C, 0x3F, 0x5F, 0x37, 0x00, 0x36, 0xB4]);
+        assert_eq!(
+            (s.id, s.seq, s.longitude_text()),
+            (2, 5, "142.5E".to_string())
+        );
+        assert!((s.psmc_mhz[0] - 1545.2).abs() < 1e-6 && (s.psmc_mhz[1] - 1545.01).abs() < 1e-6);
+        let s = unit([0x0C, 0x87, 0x0C, 0x41, 0x00, 0x61, 0x37, 0x0C, 0x00, 0x00]);
+        assert_eq!(
+            (s.id, s.seq, s.longitude_text()),
+            (4, 3, "145.5E".to_string())
+        );
+        assert!((s.psmc_mhz[0] - 1545.23).abs() < 1e-6 && s.psmc_mhz[1] == 0.0);
+        let s = unit([0x0C, 0x87, 0x08, 0x5D, 0x3F, 0x60, 0x36, 0xDA, 0x00, 0x00]);
+        assert_eq!((s.id, s.longitude_text()), (5, "144E".to_string()));
+        assert!((s.psmc_mhz[0] - 1545.105).abs() < 1e-6);
+        let s = unit([0x0C, 0x87, 0x00, 0x7B, 0x08, 0xAF, 0x36, 0xDC, 0x00, 0x00]);
+        assert_eq!(
+            (s.id, s.seq, s.longitude_text()),
+            (7, 0, "97.5W".to_string())
+        );
+        assert_eq!(
+            s.describe(),
+            "satellite ID 7 (long 97.5W)  seq 0  Psmc1 1545.1100 MHz"
+        );
+    }
+
     use super::*;
 
     fn odd(c: u8) -> u8 {

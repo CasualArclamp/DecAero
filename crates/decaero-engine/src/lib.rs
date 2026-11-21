@@ -232,6 +232,9 @@ pub struct View {
     /// When it ends, `iq_note` says where it went (or why it failed).
     pub iq_recording: Option<(std::path::PathBuf, f64)>,
     pub iq_note: String,
+    /// The satellites the system table has named, by number, with when
+    /// each was last heard (seconds into the input).
+    pub satellites: Vec<(decaero_core::su::Satellite, f64)>,
     /// How the feeds out are doing.
     pub feeds: feed::FeedCounts,
     /// The averaged spectrum again, finer, for the part of the band on
@@ -1240,15 +1243,16 @@ fn drain_events(
                     } if kind != Kind::C => {
                         format!("GES {ges:02X}  {mhz:.4} MHz at {bit_rate} bit/s")
                     }
-                    decaero_core::su::Meaning::Satellite {
-                        id,
-                        longitude,
-                        psmc_mhz,
-                    } if kind != Kind::C => {
-                        format!(
-                            "satellite {id} at {longitude:.1}°E  Psmc {:.4} MHz",
-                            psmc_mhz[0]
-                        )
+                    decaero_core::su::Meaning::Satellite(sat) if kind != Kind::C => {
+                        let mut v = shared.view.lock().unwrap();
+                        match v.satellites.iter_mut().find(|(s, _)| s.id == sat.id) {
+                            Some(entry) => *entry = (sat, seconds),
+                            None => {
+                                v.satellites.push((sat, seconds));
+                                v.satellites.sort_by_key(|(s, _)| s.id);
+                            }
+                        }
+                        sat.describe()
                     }
                     _ => match decaero_core::su::call_progress(&bytes) {
                         Some(p) => format!("{}\n{}", p.describe(), hex(&bytes[..10])),

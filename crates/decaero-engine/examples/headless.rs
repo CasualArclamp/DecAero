@@ -127,6 +127,20 @@ fn main() {
         log.iter().filter(|l| l.message).count(),
         v.calls.len()
     );
+    // `--grep TEXT`: every log line, signalling too, whose title or text has it.
+    if let Some(pattern) = args
+        .windows(2)
+        .find(|w| w[0] == "--grep")
+        .map(|w| w[1].clone())
+    {
+        for l in log
+            .iter()
+            .filter(|l| l.title.contains(&pattern) || l.text.contains(&pattern))
+        {
+            let text = l.text.replace('\n', " / ");
+            println!("{:8.1}s #{} {} | {text}", l.seconds, l.channel, l.title);
+        }
+    }
     for l in log.iter().filter(|l| l.message).take(12) {
         println!(
             "  {:6.1}s #{} {} {} | {}",

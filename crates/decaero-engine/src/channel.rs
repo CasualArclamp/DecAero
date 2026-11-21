@@ -771,7 +771,7 @@ fn process(
                         }
                         Meaning::Aircraft { .. }
                         | Meaning::Channel { .. }
-                        | Meaning::Satellite { .. }
+                        | Meaning::Satellite(_)
                         | Meaning::Plain => {}
                     }
                     if let Some(data) = reassembler.push(&u.bytes) {
