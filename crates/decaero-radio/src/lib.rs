@@ -7,6 +7,9 @@
 //! can draw controls for any of them) is DecSAT's `decsat-remote/src/radios.rs`
 //! (same author, GPL-3), with the RTL-SDR and UHD added.
 
+#[cfg(all(feature = "rtl", any(target_os = "android", target_os = "linux")))]
+mod rtl_usb;
+
 use decaero_engine::Source;
 use decsat_core::Result;
 use decsat_io::IqSource;
@@ -56,6 +59,44 @@ pub trait RadioControl: Send + Sync {
     fn set_center(&self, hz: f64) -> Result<()>;
     fn set_gain(&self, name: &str, value: f64) -> Result<()>;
 }
+
+/// Asks the system for a USB device with one of these (vendor, product) ids
+/// and gives its open file descriptor, or says why not. The descriptor stays
+/// the system's: it is duplicated here before use.
+pub type UsbOpener = Box<dyn Fn(&[(u16, u16)]) -> std::result::Result<i32, String> + Send + Sync>;
+
+static USB_OPENER: std::sync::OnceLock<UsbOpener> = std::sync::OnceLock::new();
+
+/// Android only lets a program open a USB device through its own permission
+/// dialog, which is Java's business: the app hands in the way to ask. Where
+/// none is set (a desktop) the drivers find their radios themselves.
+pub fn set_usb_opener(opener: UsbOpener) {
+    let _ = USB_OPENER.set(opener);
+}
+
+/// The radio's descriptor from the system, where the system has to be asked.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+#[allow(dead_code)] // used by whichever radios are compiled in
+fn usb_fd(ids: &[(u16, u16)]) -> Result<Option<std::os::fd::OwnedFd>> {
+    use std::os::fd::BorrowedFd;
+    let Some(opener) = USB_OPENER.get() else {
+        return Ok(None);
+    };
+    let fd = opener(ids).map_err(bad)?;
+    // SAFETY: the opener has just returned this descriptor as open, and it
+    // stays open (the app keeps the connection) while we duplicate it.
+    //
+    // Rust note: `BorrowedFd` is a descriptor we may use but not close;
+    // `try_clone_to_owned` is `dup`, giving one that is ours to close.
+    let ours = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
+    Ok(Some(ours))
+}
+
+/// USB ids of the RTL2832U dongles in common use (librtlsdr's `known_devices`:
+/// the generic ids, which the RTL-SDR Blog V3 and V4 use too).
+#[cfg(any(target_os = "android", target_os = "linux"))]
+#[allow(dead_code)]
+const RTL_IDS: [(u16, u16); 2] = [(0x0bda, 0x2838), (0x0bda, 0x2832)];
 
 fn bad(msg: impl Into<String>) -> decsat_core::Error {
     decsat_core::Error::Other(msg.into())
@@ -145,10 +186,13 @@ pub fn list() -> Vec<RadioInfo> {
         gains: fobos_gains(),
         bias_tee: None,
     });
-    #[cfg(all(windows, feature = "rtl"))]
+    #[cfg(all(
+        feature = "rtl",
+        any(windows, target_os = "android", target_os = "linux")
+    ))]
     v.push(RadioInfo {
         key: "rtl".into(),
-        name: "RTL-SDR".into(),
+        name: "RTL-SDR (V3, V4)".into(),
         min_hz: 24e6,
         max_hz: 1.766e9,
         rates: vec![1.024e6, 1.4e6, 1.8e6, 2.048e6, 2.4e6],
@@ -387,6 +431,11 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
             }
             #[cfg(feature = "airspy")]
             "airspy" => {
+                // Android: the system opens it, and the driver is told.
+                #[cfg(target_os = "android")]
+                if let Some(fd) = usb_fd(&[(0x1d50, 0x60a1)])? {
+                    libairspy_rs::offer_fd(fd);
+                }
                 let s = decsat_io::AirspySource::open(decsat_io::AirspySettings {
                     center_hz: req.center_hz as u64,
                     sample_rate: req.sample_rate as u32,
@@ -468,6 +517,30 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                         Ok(())
                     },
                     apply: |c: &decsat_io::RtlControl, g| {
+                        c.gain(value(g, "auto") < 0.5, (value(g, "gain") * 10.0) as i32);
+                        Ok(())
+                    },
+                };
+                (Box::new(s), Some(Arc::new(live)))
+            }
+            #[cfg(all(feature = "rtl", any(target_os = "android", target_os = "linux")))]
+            "rtl" => {
+                let s = rtl_usb::Source::open(rtl_usb::Settings {
+                    center_hz: req.center_hz as u32,
+                    rate: req.sample_rate as u32,
+                    gain_tenths: (value(&gains, "gain") * 10.0) as i32,
+                    manual_gain: value(&gains, "auto") < 0.5,
+                    bias_tee: req.bias_tee && info.bias_tee.is_some(),
+                    fd: usb_fd(&RTL_IDS)?,
+                })?;
+                let live = Live {
+                    ctl: s.control(),
+                    gains: gains.into(),
+                    center: |c: &rtl_usb::Control, hz| {
+                        c.tune(hz as u32);
+                        Ok(())
+                    },
+                    apply: |c: &rtl_usb::Control, g| {
                         c.gain(value(g, "auto") < 0.5, (value(g, "gain") * 10.0) as i32);
                         Ok(())
                     },

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- made by CasualArclamp -->
+<!-- The USB radios this app drives (decimal ids, as Android wants them). -->
+<resources>
+    <!-- RTL2832U dongles, the RTL-SDR Blog V3 and V4 among them: 0bda:2838, 0bda:2832 -->
+    <usb-device vendor-id="3034" product-id="10296" />
+    <usb-device vendor-id="3034" product-id="10290" />
+    <!-- Airspy R2 / Mini and the HydraSDR RFOne: 1d50:60a1 -->
+    <usb-device vendor-id="7504" product-id="24737" />
+</resources>

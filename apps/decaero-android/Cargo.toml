@@ -1,0 +1,27 @@
+# made by CasualArclamp
+[package]
+name = "decaero-android"
+description = "DecAero on Android: the GUI's touch layout in a native activity, with USB radios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.95"
+
+# A shared library the Android activity loads (android/ holds the Gradle
+# project around it). On any other system it builds to an empty library, so
+# the workspace's build, tests and lints still go through.
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+decaero-gui = { path = "../decaero-gui" }
+# The radios a phone can drive over its USB socket.
+decaero-radio = { path = "../../crates/decaero-radio", default-features = false, features = ["airspy", "rtl"] }
+# Calls into the Java side of the activity (USB permission, file chooser).
+jni = "0.21"
+ndk-context = "0.1"
+libc = "0.2"
+
+[lints]
+workspace = true

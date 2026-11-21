@@ -9,6 +9,7 @@
 /calls
 /db
 /exe/*.exe
+/exe/*.apk
 *.cs8
 *.cs16
 *.cf32

@@ -9,6 +9,10 @@ repository.workspace = true
 # eframe/egui 0.36 need Rust 1.95 (as in DecSAT), above the libraries' MSRV.
 rust-version = "1.95"
 
+# The window's code is a library so the Android app can start it too.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "decaero-gui"
 path = "src/main.rs"
@@ -16,12 +20,8 @@ path = "src/main.rs"
 [dependencies]
 decaero-engine = { path = "../../crates/decaero-engine" }
 decaero-core = { path = "../../crates/decaero-core" }
-decaero-radio = { path = "../../crates/decaero-radio" }
 num-complex.workspace = true
-# The glow (OpenGL) renderer, as DecSAT: plenty for 2-D and a smaller exe.
-eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 cpal = "0.18.2"
-rfd = "0.17.2"
 # Call recordings: libopus (built from source by the crate, needs CMake) in an Ogg file.
 opus = "0.4.0"
 ogg = "0.9.2"
@@ -29,6 +29,22 @@ ogg = "0.9.2"
 flate2 = "1"
 ureq = "3"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+# A desktop: every radio, a window, the system's file dialog.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+decaero-radio = { path = "../../crates/decaero-radio" }
+# The glow (OpenGL) renderer, as DecSAT: plenty for 2-D and a smaller exe.
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+rfd = "0.17.2"
+
+# Android (started by apps/decaero-android): the radios a phone can drive
+# over USB, and a native activity for a window.
+[target.'cfg(target_os = "android")'.dependencies]
+decaero-radio = { path = "../../crates/decaero-radio", default-features = false, features = ["airspy", "rtl"] }
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "android-native-activity"] }
+# Only for the type of the handle Android gives a native program (the same
+# winit eframe uses).
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
 
 [lints]
 workspace = true

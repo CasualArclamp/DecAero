@@ -500,3 +500,57 @@ Still to do, roughly in this order:
 - Tone frames played: needs a recording with real ones (see above).
 - decsat-server's compressed link as an input.
 - A test modulator crate, so the sensitivity figures are regression tests.
+
+## Android and the touch layout
+
+Asked for 2026-11-21: an Android app, easy with fingers, for a phone held
+sideways (a Galaxy S25 Ultra: about 830 by 380 points), with the RTL-SDR
+(V3, V4) and the Airspy / HydraSDR on the USB socket.
+
+- **One program.** The window's code is a library (`apps/decaero-gui/src/lib.rs`);
+  the desktop's `main.rs` and the Android app (`apps/decaero-android`, a
+  `NativeActivity` that loads the Rust library) both call `decaero_gui::run`.
+  What differs comes in a `Platform`: touch layout on, where files go, the
+  system's file chooser, Android's app handle.
+- **The layout** is `touch.rs`: a rail of buttons, one side panel at a time,
+  the desktop's own panels inside with larger controls (`touch::style`). The
+  constellation is small there (a third of the height) with the margin bar
+  and a cut-down channel list beside it, so the decoder's figures have room.
+  Boxes that take text open keys of their own: a native window is not
+  reliably given the phone's keyboard, and what is typed is a frequency or an
+  address. `--touch --size 832x384 [--panel NAME] [--keys]` shows it on a
+  desktop, for screenshots.
+- **The band with fingers** (`band.rs`): two fingers pinch and move; what one
+  finger does is `Band::drag` (move, draw a decoder's box, tune), set by the
+  buttons on the band. Follow voice's range is the same box.
+- **USB radios.** Android lets a program open a USB device only through
+  `UsbManager`, after its permission dialog; native code cannot list devices.
+  `MainActivity.openUsb` does that and returns the file descriptor;
+  `decaero_radio::set_usb_opener` is how the radio crate reaches it. The
+  drivers then open from the descriptor:
+  - RTL-SDR: `rtl-sdr-rs` (`crates/decaero-radio/src/rtl_usb.rs`), also used
+    on Linux, where the Windows `rtlsdr.dll` path does not exist;
+  - Airspy / HydraSDR: DecSAT's driver over `libairspy-rs`, as on the desktop.
+  Both crates needed a small change to build for Android, so patched copies
+  are in `vendor/` (each `Cargo.toml` says what changed) and the workspace's
+  `[patch.crates-io]` uses them. Worth offering upstream.
+- **Files**: the app's own folder on shared storage (`Platform::data_dir`). A
+  picked recording arrives as an open descriptor and is read as
+  `/proc/self/fd/N`.
+- **Building**: `scripts/build-android.ps1` (cargo-ndk, then Gradle in
+  `apps/decaero-android/android`). The APK is signed with the building
+  machine's debug key: an APK built on another machine will not install over
+  it without uninstalling first. `targetSdk` is 34 so the window is kept off
+  the status bar and the camera cut-out.
+- **Unattended**: `adb shell "am start -n com.casualarclamp.decaero/.MainActivity
+  --es args 'FILE.wav --center 1545.0'"` passes a command line;
+  `adb logcat -s DecAero` shows what the program prints.
+
+Checked 2026-11-21 in the emulator (Android 15, x86_64) on `areo.wav`: all
+twenty carriers lock, the panels, the keys, the zoom buttons, a panel's
+scrolling, the file chooser and the answer to Start radio with no radio
+plugged in. Not checked: any real radio on a phone, sound out, pinch (the
+emulator was driven by single taps), a real phone's speed.
+
+Not done: running in the background, a notification for calls, CI and a
+release job for the APK, the other radios over USB (HackRF, Pluto).

@@ -34,3 +34,12 @@ it may be covered by patents; check before compiling or using it.
 
 DecSAT (https://github.com/CasualArclamp/DecSAT), GPL-3.0-or-later: the look,
 the waterfall and the DSP building blocks.
+
+rtl-sdr-rs (https://github.com/ccostes/rtl-sdr-rs), MPL-2.0: the RTL-SDR
+driver on Android and Linux. A copy with a small change for Android is in
+vendor/rtl-sdr-rs (its Cargo.toml says what changed; the changed files are
+marked).
+
+libairspy-rs (https://github.com/jasonherald/libairspy-rs), BSD-3-Clause AND
+MIT: the Airspy driver (through DecSAT). A copy with an addition for Android
+is in vendor/libairspy-rs (its Cargo.toml says what was added).

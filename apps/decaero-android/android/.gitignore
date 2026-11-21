@@ -1,0 +1,6 @@
+# made by CasualArclamp
+.gradle/
+build/
+local.properties
+# The Rust libraries, put here by scripts/build-android.ps1.
+app/src/main/jniLibs/

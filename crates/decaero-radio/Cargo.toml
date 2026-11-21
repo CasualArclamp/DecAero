@@ -29,5 +29,14 @@ num-complex.workspace = true
 decsat-io = { git = "https://github.com/CasualArclamp/DecSAT", tag = "v1.10.0" }
 decsat-core = { git = "https://github.com/CasualArclamp/DecSAT", tag = "v1.10.0" }
 
+# RTL-SDR where there is no rtlsdr.dll: pure Rust over USB (src/rtl_usb.rs).
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+rtl-sdr-rs = "0.4.3"
+
+# Android hands a USB device over as a descriptor: the Airspy driver is told
+# of it directly (vendor/libairspy-rs).
+[target.'cfg(target_os = "android")'.dependencies]
+libairspy-rs = "0.2.1"
+
 [lints]
 workspace = true

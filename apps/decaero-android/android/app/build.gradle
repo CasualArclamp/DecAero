@@ -1,0 +1,49 @@
+// made by CasualArclamp
+// The Android shell around the Rust library (../src/lib.rs), which
+// scripts/build-android.ps1 builds into src/main/jniLibs first.
+plugins {
+    id 'com.android.application'
+}
+
+// The version is the workspace's, read from the root Cargo.toml.
+def cargoVersion = (file('../../../../Cargo.toml').text =~ /(?m)^version = "([0-9.]+)"/)[0][1]
+def parts = cargoVersion.tokenize('.').collect { it as int }
+
+android {
+    namespace 'com.casualarclamp.decaero'
+    compileSdk 35
+    // For stripping the Rust library's debug information as it is packed.
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'com.casualarclamp.decaero'
+        // 26 (Android 8) is the first with the sound interface cpal uses.
+        minSdk 26
+        // 34, not 35: from 35 a window is drawn under the status bar and the
+        // camera cut-out whether it asks to be or not.
+        targetSdk 34
+        versionCode parts[0] * 10000 + parts[1] * 100 + parts[2]
+        versionName cargoVersion
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with this machine's debug key so the APK installs as it
+            // is. A key of your own is needed for the Play Store.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        jniLibs {
+            // Keep the library compressed in the APK: it halves the download.
+            useLegacyPackaging true
+        }
+    }
+}
