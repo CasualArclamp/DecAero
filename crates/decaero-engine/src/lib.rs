@@ -199,6 +199,28 @@ pub struct Call {
     pub service: Option<decaero_core::su::Announcement>,
 }
 
+/// The voice channel a call release is for: a release heard on a voice
+/// channel is for that channel, one heard on a P channel for the call that
+/// aircraft is on (with the same call reference, where the call has shown
+/// one). `None` for any other unit.
+fn released_channel(
+    kind: Kind,
+    channel: ChannelId,
+    bytes: &[u8; decaero_core::pframe::SU_BYTES],
+    calls: &[Call],
+) -> Option<ChannelId> {
+    let p = decaero_core::su::call_progress(bytes).filter(|p| p.report == 5)?;
+    if kind == Kind::C {
+        return Some(channel);
+    }
+    calls
+        .iter()
+        .rev()
+        .filter(|c| c.end_s.is_none() && c.aes == Some(p.aes))
+        .find(|c| c.progress.is_none_or(|q| q.call_ref == p.call_ref))
+        .map(|c| c.channel)
+}
+
 /// A snapshot for the GUI.
 #[derive(Debug, Clone, Default)]
 pub struct View {
@@ -539,6 +561,9 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
     // Decoders the user deleted: (offset, reach). Nothing is started there
     // again by itself until the user adds one or a call is assigned there.
     let mut deleted: Vec<(f64, f64)> = Vec::new();
+    // Voice channels whose call was released (Hz from the centre, and
+    // when): left alone for a while, as the carrier can linger.
+    let mut released: Vec<(f64, f64)> = Vec::new();
     let mut deleted_ids: Vec<ChannelId> = Vec::new();
     let mut feeds = feed::Feeds::start(options.feeds.clone());
     let mut next_id: ChannelId = 1;
@@ -759,6 +784,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 &mut Vec::new(),
                 &feeds,
                 &mut raw_voice,
+                &mut Vec::new(),
             );
             let mut v = shared.view.lock().unwrap();
             v.ended = true;
@@ -898,6 +924,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             &mut finds,
             &feeds,
             &mut raw_voice,
+            &mut released,
         );
 
         // Voice follow, part three: what the deep scan found under the noise.
@@ -944,6 +971,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     || echo
                     || outside
                     || deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r)
+                    || released.iter().any(|(hz, _)| (hz - offset).abs() < 4000.0)
                 {
                     continue;
                 }
@@ -995,8 +1023,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     .any(|w| !w.closed && (w.offset_hz - offset).abs() < 4000.0);
                 let inside = follow_range.is_none_or(|(lo, hi)| (lo..=hi).contains(&offset));
                 if offset.abs() < rate / 2.0 - 5000.0 && !busy && inside {
-                    // A new call there is news: the deletion no longer holds.
+                    // A new call there is news: the deletion no longer holds,
+                    // nor does a release.
                     deleted.retain(|(hz, reach)| (hz - offset).abs() > *reach);
+                    released.retain(|(hz, _)| (hz - offset).abs() > 4000.0);
                     spawn(
                         &mut workers,
                         &mut next_id,
@@ -1016,6 +1046,9 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             let found = survey::carriers(&average, rate, options.carrier_db);
             rejected.retain(|(_, when)| seconds - when < 60.0);
             scan_rejected.retain(|(_, when)| seconds - when < 60.0);
+            // Half a minute: a released carrier is gone well before, and a new
+            // call on the channel not seen being assigned is then picked up.
+            released.retain(|(_, when)| seconds - when < 30.0);
             if options.follow {
                 // Widest first: the few always-on correction carriers then get a
                 // worker before the cap on workers is taken up by the many narrow
@@ -1030,6 +1063,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     if busy
                         || follow_range.is_some_and(|(lo, hi)| c.center_hz < lo || c.center_hz > hi)
                         || rejected.iter().any(|(hz, _)| near(*hz, 1000.0))
+                        || released.iter().any(|(hz, _)| near(*hz, 4000.0))
                         || deleted.iter().any(|(hz, r)| near(*hz, *r))
                         || workers.iter().filter(|w| !w.closed).count() >= 48
                     {
@@ -1190,6 +1224,7 @@ fn drain_events(
     finds: &mut Vec<(f64, u32)>,
     feeds: &feed::Feeds,
     raw_voice: &mut RawVoice,
+    released: &mut Vec<(f64, f64)>,
 ) {
     let mut lines = Vec::new();
     let mut line =
@@ -1308,6 +1343,26 @@ fn drain_events(
                     detail,
                     false,
                 );
+                // A call released: its voice decoder is closed now, not
+                // after the carrier has been gone some seconds.
+                if let Some(voice) = released_channel(kind, channel, &bytes, calls)
+                    && let Some(w) = workers.iter().find(|w| w.id == voice && !w.closed)
+                    && w.status.lock().unwrap().kind == Kind::C
+                    && !w.stop.swap(true, Ordering::Relaxed)
+                {
+                    let carrier = w.status.lock().unwrap().carrier_hz;
+                    released.push((carrier, seconds));
+                    line(
+                        seconds,
+                        voice,
+                        Kind::C,
+                        aes,
+                        ges,
+                        "voice decoder closed".to_string(),
+                        format!("call released ({:+.2} kHz)", carrier / 1e3),
+                        false,
+                    );
+                }
             }
             Event::Acars {
                 channel,
@@ -1456,5 +1511,81 @@ ADS-C {}",
         while log.len() > 4000 {
             log.pop_front();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_release_closes_the_right_voice_channel() {
+        use super::*;
+        let call = |channel: ChannelId, aes: u32, call_ref: Option<u8>, ended: bool| Call {
+            channel,
+            carrier_hz: 0.0,
+            aes: Some(aes),
+            ges: Some(0x90),
+            start_s: 0.0,
+            end_s: ended.then_some(5.0),
+            frames: 0,
+            progress: call_ref.map(|r| decaero_core::su::CallProgress {
+                aes,
+                ges: 0x90,
+                q_no: 0xD,
+                call_ref: r,
+                report: 1,
+                eirp_db: None,
+                cause: None,
+            }),
+            eirp_db: None,
+            cause: None,
+            service: None,
+        };
+        let unit = |aes: u32, call_ref: u8, report: u8| {
+            let mut b = [0u8; decaero_core::pframe::SU_BYTES];
+            b[..8].copy_from_slice(&[
+                0x30,
+                (aes >> 16) as u8,
+                (aes >> 8) as u8,
+                aes as u8,
+                0x90,
+                0xD0 | call_ref,
+                report,
+                0,
+            ]);
+            b
+        };
+        let calls = vec![
+            call(4, 0x8963E6, Some(9), true),
+            call(7, 0x8963E6, Some(9), false),
+            call(8, 0x71F00F, None, false),
+        ];
+        // Heard on the voice channel itself: that channel.
+        assert_eq!(
+            released_channel(Kind::C, 7, &unit(0x123456, 0, 5), &calls),
+            Some(7)
+        );
+        // Heard on a P channel: the open call of that aircraft and call.
+        assert_eq!(
+            released_channel(Kind::P(600), 1, &unit(0x8963E6, 9, 5), &calls),
+            Some(7)
+        );
+        assert_eq!(
+            released_channel(Kind::P(600), 1, &unit(0x71F00F, 2, 5), &calls),
+            Some(8)
+        );
+        // Another call of that aircraft, or another aircraft: none.
+        assert_eq!(
+            released_channel(Kind::P(600), 1, &unit(0x8963E6, 3, 5), &calls),
+            None
+        );
+        assert_eq!(
+            released_channel(Kind::P(600), 1, &unit(0x111111, 9, 5), &calls),
+            None
+        );
+        // Not a release (a status report): none.
+        assert_eq!(
+            released_channel(Kind::C, 7, &unit(0x8963E6, 9, 1), &calls),
+            None
+        );
     }
 }
