@@ -124,6 +124,51 @@ lumps, the other rail being caught half way between its decisions.
 3. A decoder that loses its carrier for a few seconds is retired and the call
    is closed in the log.
 
+### Voice carriers side by side (2026-11-21)
+
+Voice channels on 143.5E sit on a 5 kHz raster (calls at +220.4, +225.4,
++230.4 kHz in Rory's band), closer than an 8400 bit/s carrier is wide, so
+two or three calls often run next to each other. Three faults kept the new
+one from getting a decoder, all found on the test modulator (below):
+
+- The deep scan reported only the strongest line pair of each rate in each
+  of its ~9.8 kHz channels, whose search reaches ±5.4 kHz: two voice carriers
+  in one channel gave one find. It now takes every peak of the line-pair
+  score at least 0.4 of the bit rate apart (`LineSpectrum::find_all`), each
+  1.6 times clear of the other rates' pairs within 3.5 kHz (8.75 kHz where a
+  21000 bit/s pair is involved).
+- Any decoder within 4 kHz plus half its box of a find counted as busy, so a
+  running call blocked the channel next door. A decoder that knows its
+  carrier (locked, or named by the scan, or assigned by a P channel) now
+  holds only half the raster round it (`half_raster`).
+- A searching decoder near a find was stopped to make way, and a decoder the
+  scan had just started still reads "searching" until its thread runs: when
+  the new carrier came first in a look (the left one of a pair), the next
+  find, its running neighbour, stopped it at once. That was the decoder that
+  "spawns to the left and goes". Named and assigned decoders no longer give
+  way, and nothing gives way to a find that is already held.
+
+The ghost rule (a find half way between two locked carriers is their cross
+term) now only applies to voice rates when the two are under two raster steps
+apart, so the middle call of three is found. A scan-named voice decoder that
+never decodes a frame is left alone for a minute, as other failed finds are.
+
+Test modulator: `cargo run -p decaero-core --example cbits -- FRAMES SEED
+OUT.bin` writes real C channel frame bits and
+offset QPSK (`scripts/cmod.py`: I a half symbol after Q, root raised cosine 0.6) at chosen
+offsets, start times and Es/N0 in 1.248 MS/s IQ. Set `AERO_FOLLOW_TRACE=1` to
+see every find, spawn and close. Before and after, on two to three carriers
+5 kHz apart at Es/N0 12 dB, one starting at 10 s: the late one got no decoder
+before, and decodes every frame now. `IQ/areo3.wav` gains a P 10500 carrier at
++181164 Hz (1918 good CRCs; before, a decoder sat 310 Hz under it and gave
+up), and JAERO's 8400 sample its middle carrier. No recording lost anything.
+
+Still open: a carrier 12 dB weaker than its neighbour (Es/N0 6 against 18 dB)
+is not named, though it is when alone; the strong one raises the squared
+spectrum's floor round it. The neighbours' spectra overlap (4200 symbols/s at
+roll-off 0.6 is 6.7 kHz wide): on the modulator a neighbour at the same level
+costs about 1 dB of Eb/N0, one 6 dB stronger about 2.6 dB.
+
 ### Call progress (Rory's table, 2026-11-18)
 
 The call progress unit (0x30), 12 octets as on the P channel and the C
@@ -579,7 +624,8 @@ sideways (a Galaxy S25 Ultra: about 830 by 380 points), with the RTL-SDR
   drivers then open from the descriptor:
   - RTL-SDR: `rtl-sdr-rs` (`crates/decaero-radio/src/rtl_usb.rs`), which is
     the RTL-SDR driver on every system now: the Windows exe no longer wants
-    `RTLtlsdr.dll` (the dongle needs the WinUSB driver, Zadig). Built with
+    `RTL
+tlsdr.dll` (the dongle needs the WinUSB driver, Zadig). Built with
     its `rtl_sdr_blog` feature: the RTL-SDR Blog driver's PLL settings (full
     VCO current, 2.0 V drop-out), without which the R82xx's PLL does not
     hold lock at L-band (seen on a V4, 2026-11-21);
