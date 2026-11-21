@@ -32,6 +32,9 @@ const FIRST_STRENGTH: f32 = 5.0;
 /// scan then covers the middle 1.5 MHz or so, which is more than the Aero
 /// channels of one beam take.
 const EACH_SIDE: usize = 80;
+/// How near another rate's line pair must be to count against a find: a
+/// strong carrier's ghosts at the other rates sit within its own width.
+const RIVAL_HZ: f64 = 3500.0;
 
 /// Length of the filter bank's transform for an input at `in_rate`.
 fn bank_size(in_rate: f64) -> usize {
@@ -128,7 +131,9 @@ pub fn run(
             } else {
                 k as f64 - n as f64
             } * spacing;
-            let found = spectrum.find(&[21_000, 8400, 10500, 1200, 600], spacing / 2.0 + 500.0);
+            // Every line pair, not just the best: two voice carriers 5 kHz
+            // apart are often both within one channel's reach.
+            let found = spectrum.find_all(&[21_000, 8400, 10500, 1200, 600], spacing / 2.0 + 500.0);
             spectrum.fade(KEEP);
             if std::env::var("AERO_SCAN_TRACE").is_ok()
                 && found.first().is_some_and(|f| f.strength > 2.8)
@@ -136,29 +141,41 @@ pub fn run(
                 eprintln!(
                     "scan ch {k:2} centre {centre:9.0} segs {:.1} {:?}",
                     spectrum.segments(),
-                    &found[..2.min(found.len())]
+                    &found[..3.min(found.len())]
                 );
             }
-            // The strongest pair, if it stands clear of the others (a strong
-            // carrier leaves weaker ghosts at the other rates' spacings).
-            let Some(best) = found.first() else { continue };
-            let clear = found
-                .get(1)
-                .is_none_or(|second| best.strength > 1.6 * second.strength);
-            // The slow rates are narrow and strong enough for the spectrum
-            // survey; here they are mostly ghosts between strong neighbours,
-            // so they must stand out more.
-            let need = if best.bit_rate <= 1200 {
-                1.7 * threshold
-            } else {
-                threshold
-            };
-            if best.strength >= need && clear {
-                let _ = events.send(Event::Found {
-                    offset_hz: centre + best.offset_hz,
-                    bit_rate: best.bit_rate,
-                    strength: best.strength,
-                });
+            for f in &found {
+                // It must stand clear of the other rates' pairs near it (a
+                // strong carrier leaves weaker ghosts at the other rates'
+                // spacings).
+                let rival = found
+                    .iter()
+                    .filter(|g| {
+                        // The 21000 bit/s carrier is two and a half times as wide.
+                        let reach = if g.bit_rate == 21_000 || f.bit_rate == 21_000 {
+                            2.5 * RIVAL_HZ
+                        } else {
+                            RIVAL_HZ
+                        };
+                        g.bit_rate != f.bit_rate && (g.offset_hz - f.offset_hz).abs() < reach
+                    })
+                    .map(|g| g.strength)
+                    .fold(0.0, f32::max);
+                // The slow rates are narrow and strong enough for the spectrum
+                // survey; here they are mostly ghosts between strong neighbours,
+                // so they must stand out more.
+                let need = if f.bit_rate <= 1200 {
+                    1.7 * threshold
+                } else {
+                    threshold
+                };
+                if f.strength >= need && f.strength > 1.6 * rival {
+                    let _ = events.send(Event::Found {
+                        offset_hz: centre + f.offset_hz,
+                        bit_rate: f.bit_rate,
+                        strength: f.strength,
+                    });
+                }
             }
         }
     }

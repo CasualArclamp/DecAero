@@ -199,6 +199,28 @@ pub struct Call {
     pub service: Option<decaero_core::su::Announcement>,
 }
 
+/// How close to a carrier at `bit_rate` another of its kind can sit: half
+/// the spacing of their channels (the slow P and R/T channels are on a
+/// 2.5 kHz raster but narrow, the voice channels 5 kHz apart, the 21000 bit/s
+/// one is two and a half times as wide).
+fn half_raster(bit_rate: u32) -> f64 {
+    match bit_rate {
+        0..=1200 => 900.0,
+        21_000 => 7000.0,
+        _ => 2500.0,
+    }
+}
+
+/// The bit rate a channel runs at, for [`half_raster`] (a correction carrier
+/// is about as wide as a voice carrier).
+fn kind_rate(s: &ChannelStatus) -> u32 {
+    match s.kind {
+        Kind::P(r) | Kind::Rt(r) => r,
+        Kind::C if s.wide => 21_000,
+        _ => 8400,
+    }
+}
+
 /// The voice channel a call release is for: a release heard on a voice
 /// channel is for that channel, one heard on a P channel for the call that
 /// aircraft is on (with the same call reference, where the call has shown
@@ -401,6 +423,11 @@ struct Worker {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
     closed: bool,
+    /// The bit rate the deep scan named, the worker then starting on the
+    /// carrier at once.
+    named: Option<u32>,
+    /// A voice channel a P channel has assigned (exactly where it is).
+    assigned: bool,
 }
 
 struct Shared {
@@ -596,6 +623,11 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
         }
         let id = *next_id;
         *next_id += 1;
+        if std::env::var("AERO_FOLLOW_TRACE").is_ok() {
+            eprintln!(
+                "{seconds:6.1} spawn #{id} at {offset_hz:9.1} width {width_hz:.0} rates {rates:?} known {known_rate:?}"
+            );
+        }
         let (tx, rx) = mpsc::sync_channel(64);
         let status = Arc::new(Mutex::new(ChannelStatus::new(id, offset_hz, seconds)));
         let stop = Arc::new(AtomicBool::new(false));
@@ -634,6 +666,8 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             stop,
             join,
             closed: false,
+            named: known_rate,
+            assigned: eager,
         });
         id
     };
@@ -944,7 +978,10 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     900.0
                 };
                 // Two carriers squared together leave a line pair half way
-                // between them: not a carrier.
+                // between them: not a carrier. Unless they are two voice
+                // channels or more apart, when a real voice carrier fits
+                // there too (three calls side by side on the 5 kHz raster);
+                // a ghost there gets a decoder that soon gives up.
                 let carriers: Vec<f64> = workers
                     .iter()
                     .filter(|w| !w.closed)
@@ -952,10 +989,15 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     .filter(|s| s.locked)
                     .map(|s| s.carrier_hz)
                     .collect();
+                let room = if bit_rate <= 1200 {
+                    f64::INFINITY
+                } else {
+                    4.0 * half_raster(bit_rate) - 500.0
+                };
                 let ghost = carriers.iter().enumerate().any(|(i, a)| {
                     carriers[i + 1..]
                         .iter()
-                        .any(|b| ((a + b) / 2.0 - offset).abs() < 300.0)
+                        .any(|b| ((a + b) / 2.0 - offset).abs() < 300.0 && (a - b).abs() < room)
                 });
                 // A known carrier seen again through the scan's filter bank.
                 let step = scanner::alias_step(rate);
@@ -967,6 +1009,13 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     same_rate && steps.round() != 0.0 && (steps - steps.round()).abs() * step < 8.0
                 });
                 let outside = follow_range.is_some_and(|(lo, hi)| offset < lo || offset > hi);
+                if std::env::var("AERO_FOLLOW_TRACE").is_ok() {
+                    eprintln!(
+                        "{seconds:6.1} find {offset:9.1} {bit_rate} ghost {ghost} echo {echo} outside {outside} deleted {} released {}",
+                        deleted.iter().any(|(hz, r)| (hz - offset).abs() < *r),
+                        released.iter().any(|(hz, _)| (hz - offset).abs() < 4000.0)
+                    );
+                }
                 if ghost
                     || echo
                     || outside
@@ -977,13 +1026,42 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 }
                 // A decoder still searching here gives way: the scan knows
                 // what the carrier is.
-                let mut busy = false;
-                for w in workers.iter().filter(|w| !w.closed) {
-                    if (w.offset_hz - offset).abs() < reach + w.width_hz / 2.0 {
-                        if w.status.lock().unwrap().kind == Kind::Searching {
+                //
+                // A decoder that knows its carrier (locked on it, or put on
+                // it by the scan and not yet started) holds only that
+                // carrier: voice channels sit 5 kHz apart, closer than the
+                // reach of a box still being searched. So does a voice
+                // channel assigned by a P channel, whose place is exact.
+                let held_by = |w: &Worker, s: &ChannelStatus| -> Option<(f64, f64)> {
+                    let held = |rate: u32| half_raster(bit_rate).max(half_raster(rate));
+                    if s.locked {
+                        Some((s.carrier_hz, held(kind_rate(s))))
+                    } else if let Some(rate) = w.named {
+                        Some((w.offset_hz, held(rate)))
+                    } else if w.assigned {
+                        Some((w.offset_hz, held(8400)))
+                    } else {
+                        None
+                    }
+                };
+                let busy = workers.iter().filter(|w| !w.closed).any(|w| {
+                    let s = w.status.lock().unwrap();
+                    match held_by(w, &s) {
+                        Some((hz, reach)) => (hz - offset).abs() < reach,
+                        None => {
+                            s.kind != Kind::Searching
+                                && (w.offset_hz - offset).abs() < reach + w.width_hz / 2.0
+                        }
+                    }
+                });
+                if !busy {
+                    for w in workers.iter().filter(|w| !w.closed) {
+                        let s = w.status.lock().unwrap();
+                        if held_by(w, &s).is_none()
+                            && s.kind == Kind::Searching
+                            && (w.offset_hz - offset).abs() < reach + w.width_hz / 2.0
+                        {
                             w.stop.store(true, Ordering::Relaxed);
-                        } else {
-                            busy = true;
                         }
                     }
                 }
@@ -1116,9 +1194,19 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                 return false;
             }
             let s = w.status.lock().unwrap();
+            if std::env::var("AERO_FOLLOW_TRACE").is_ok() {
+                eprintln!(
+                    "{now:6.1} closed #{} {:?} at {:.1} frames {} Eb/N0 {:.1} uw {}/{}",
+                    w.id, s.kind, s.carrier_hz, s.frames, s.eb_n0_db, s.uw_wrong, s.uw_bits
+                );
+            }
             // A voice channel whose call is over: gone at once (the call
-            // stays in the calls table).
+            // stays in the calls table). One that never decoded a frame was
+            // not a call: leave the place a minute, as below.
             if s.kind == Kind::C {
+                if s.frames == 0 {
+                    scan_rejected.push((w.offset_hz, now));
+                }
                 return false;
             }
             // Nothing there, or nothing that ever decoded: leave the place
