@@ -9,11 +9,25 @@
 //! at run time into the settings folder and never shipped or committed.
 //! The address ranges are the main allocations of ICAO Annex 10 volume III,
 //! chapter 9, table 9-1.
+//!
+//! **Live lookup.** When it is on, each address seen is also asked of
+//! adsbdb.com (`api.adsbdb.com/v0/aircraft/HEX`: registration, type,
+//! registered owner), once, in the background and no faster than one a
+//! second. What it says comes before the database: it names the owner far
+//! more often, and the owner decides "military" (an air force, navy, army
+//! and the like), not the database's flag, which marks some airliners and
+//! government transports. What was found is kept in `aircraft-live.txt`
+//! beside the database, so each address is asked only once. Only the
+//! 24-bit address leaves the machine.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Where an address is looked up live.
+pub const LIVE_URL: &str = "https://api.adsbdb.com/v0/aircraft/";
 
 pub const DATABASE_URL: &str =
     "https://raw.githubusercontent.com/wiedehopf/tar1090-db/csv/aircraft.csv.gz";
@@ -146,9 +160,25 @@ pub enum State {
     Failed(String),
 }
 
+/// What the live lookup knows of an address.
+#[derive(Debug, Clone, PartialEq)]
+enum Live {
+    /// Waiting its turn, or being asked.
+    Asked,
+    Found(Info),
+    /// The service does not know it (or could not be reached this run).
+    Unknown,
+}
+
 struct Inner {
     table: Option<Table>,
     state: State,
+    live: HashMap<u32, Live>,
+    /// Addresses waiting to be asked, oldest first.
+    queue: VecDeque<u32>,
+    /// Live lookups answered, and the last error, for the panel.
+    live_count: usize,
+    live_error: Option<String>,
 }
 
 /// Shared with the threads that load and download.
@@ -156,22 +186,261 @@ struct Inner {
 pub struct Lookup {
     inner: Arc<Mutex<Inner>>,
     path: PathBuf,
+    /// Live lookup on (and its thread running).
+    live_on: Arc<AtomicBool>,
+    live_started: Arc<AtomicBool>,
+}
+
+/// Whether a registered owner is a military one.
+fn military_owner(owner: &str) -> bool {
+    let o = owner.to_ascii_lowercase();
+    [
+        "air force",
+        "navy",
+        "naval",
+        "army",
+        "military",
+        "marine corps",
+        "marines",
+        "coast guard",
+        "defence",
+        "defense",
+        "luftwaffe",
+        "armée",
+        "fuerza aérea",
+        "fuerza aerea",
+        "aeronautica militare",
+        "people's liberation",
+        "plaaf",
+        "national guard",
+    ]
+    .iter()
+    .any(|w| o.contains(w))
+}
+
+/// A string field of adsbdb's answer (`"name":"value"`), with the escapes
+/// it uses undone. Enough for this one flat object, so no JSON crate.
+fn json_field(body: &str, name: &str) -> String {
+    let key = format!("\"{name}\":");
+    let Some(at) = body.find(&key) else {
+        return String::new();
+    };
+    let rest = body[at + key.len()..].trim_start();
+    let Some(rest) = rest.strip_prefix('"') else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                Some('n' | 't' | 'r') => out.push(' '),
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    out.trim().to_string()
+}
+
+/// adsbdb's answer for one address: `None` when it does not know it.
+fn parse_live(body: &str) -> Option<Info> {
+    if !body.contains("\"aircraft\"") {
+        return None;
+    }
+    let owner = json_field(body, "registered_owner");
+    let manufacturer = json_field(body, "manufacturer");
+    let model = json_field(body, "type");
+    let description = match (manufacturer.is_empty(), model.is_empty()) {
+        (false, false) => format!("{manufacturer} {model}"),
+        (true, false) => model,
+        (false, true) => manufacturer,
+        (true, true) => String::new(),
+    };
+    Some(Info {
+        registration: json_field(body, "registration"),
+        type_code: json_field(body, "icao_type"),
+        description,
+        military: military_owner(&owner),
+        owner,
+        country: "",
+    })
+}
+
+/// One line of the kept answers: `HEX;registration;type;description;owner`.
+fn live_line(aes: u32, i: &Info) -> String {
+    let clean = |s: &str| s.replace([';', '\n', '\r'], " ");
+    format!(
+        "{aes:06X};{};{};{};{}\n",
+        clean(&i.registration),
+        clean(&i.type_code),
+        clean(&i.description),
+        clean(&i.owner)
+    )
+}
+
+fn read_live_line(line: &str) -> Option<(u32, Info)> {
+    let mut f = line.trim_end().split(';');
+    let aes = u32::from_str_radix(f.next()?, 16).ok()?;
+    let registration = f.next()?.to_string();
+    let type_code = f.next()?.to_string();
+    let description = f.next()?.to_string();
+    let owner = f.next()?.to_string();
+    Some((
+        aes,
+        Info {
+            registration,
+            type_code,
+            description,
+            military: military_owner(&owner),
+            owner,
+            country: "",
+        },
+    ))
 }
 
 impl Lookup {
     /// `path` is where the database is, or will be put.
     pub fn new(path: PathBuf) -> Self {
+        // Answers kept from earlier runs.
+        let mut live = HashMap::new();
+        if let Ok(text) = std::fs::read_to_string(path.with_file_name("aircraft-live.txt")) {
+            for (aes, info) in text.lines().filter_map(read_live_line) {
+                live.insert(aes, Live::Found(info));
+            }
+        }
         let lookup = Self {
             inner: Arc::new(Mutex::new(Inner {
                 table: None,
                 state: State::Missing,
+                live,
+                queue: VecDeque::new(),
+                live_count: 0,
+                live_error: None,
             })),
             path,
+            live_on: Arc::new(AtomicBool::new(false)),
+            live_started: Arc::new(AtomicBool::new(false)),
         };
         if lookup.path.is_file() {
             lookup.load();
         }
         lookup
+    }
+
+    /// Turn the live lookup on or off. Turned on, its thread starts.
+    pub fn set_live(&self, on: bool) {
+        self.live_on.store(on, Ordering::Relaxed);
+        if on && !self.live_started.swap(true, Ordering::Relaxed) {
+            let me = self.clone();
+            std::thread::Builder::new()
+                .name("aircraft-live".into())
+                .spawn(move || me.live_thread())
+                .ok();
+        }
+    }
+
+    pub fn live(&self) -> bool {
+        self.live_on.load(Ordering::Relaxed)
+    }
+
+    /// How the live lookup is doing, a few words for the panel.
+    pub fn live_status(&self) -> String {
+        let i = self.inner.lock().unwrap();
+        let known = i
+            .live
+            .values()
+            .filter(|l| matches!(l, Live::Found(_)))
+            .count();
+        match &i.live_error {
+            Some(e) => format!("live lookup: {e}"),
+            None => format!(
+                "live: {known} known, {} waiting, {} asked this run",
+                i.queue.len(),
+                i.live_count
+            ),
+        }
+    }
+
+    /// Ask adsbdb, one address a second, while the lookup is on.
+    fn live_thread(&self) {
+        let keep = self.path.with_file_name("aircraft-live.txt");
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .http_status_as_error(false)
+            .build()
+            .into();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            if !self.live_on.load(Ordering::Relaxed) {
+                continue;
+            }
+            let Some(aes) = self.inner.lock().unwrap().queue.pop_front() else {
+                continue;
+            };
+            let answer = agent
+                .get(&format!("{LIVE_URL}{aes:06X}"))
+                .header("User-Agent", "DecAero")
+                .call()
+                .map_err(|e| e.to_string())
+                .and_then(|r| {
+                    let status = r.status().as_u16();
+                    let body = r
+                        .into_body()
+                        .with_config()
+                        .limit(1 << 16)
+                        .read_to_string()
+                        .map_err(|e| e.to_string())?;
+                    match status {
+                        200 | 404 => Ok(body),
+                        429 => Err("asked too often; slowing down".to_string()),
+                        s => Err(format!("HTTP {s}")),
+                    }
+                });
+            let mut i = self.inner.lock().unwrap();
+            match answer {
+                Ok(body) => {
+                    i.live_count += 1;
+                    i.live_error = None;
+                    match parse_live(&body) {
+                        Some(info) => {
+                            // Kept for the next run; a failed write only
+                            // means it is asked again then.
+                            use std::io::Write;
+                            if let Some(dir) = keep.parent() {
+                                let _ = std::fs::create_dir_all(dir);
+                            }
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&keep)
+                            {
+                                let _ = f.write_all(live_line(aes, &info).as_bytes());
+                            }
+                            i.live.insert(aes, Live::Found(info));
+                        }
+                        None => {
+                            i.live.insert(aes, Live::Unknown);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Asked again later this run; a pause before the next.
+                    i.live.remove(&aes);
+                    i.live_error = Some(e);
+                    drop(i);
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                }
+            }
+        }
     }
 
     /// Where the database lives unless told otherwise: the settings folder,
@@ -243,15 +512,38 @@ impl Lookup {
     /// Everything known about an address. The country and the United States
     /// military block come from the address itself, so they are there even
     /// without the database.
+    ///
+    /// With the live lookup on, an address not yet asked is queued, and once
+    /// answered the live fields come first, the database filling what they
+    /// leave empty. "Military" is then the owner's, as long as the live
+    /// answer names one.
     pub fn get(&self, aes: u32) -> Info {
-        let mut info = self
-            .inner
-            .lock()
-            .unwrap()
+        let mut i = self.inner.lock().unwrap();
+        let mut info = i
             .table
             .as_ref()
             .and_then(|t| t.get(aes))
             .unwrap_or_default();
+        if self.live_on.load(Ordering::Relaxed) && aes != 0 && !i.live.contains_key(&aes) {
+            i.live.insert(aes, Live::Asked);
+            i.queue.push_back(aes);
+        }
+        if let Some(Live::Found(live)) = i.live.get(&aes) {
+            let pick = |a: &String, b: String| if a.is_empty() { b } else { a.clone() };
+            info = Info {
+                registration: pick(&live.registration, info.registration),
+                type_code: pick(&live.type_code, info.type_code),
+                description: pick(&live.description, info.description),
+                owner: pick(&live.owner, info.owner.clone()),
+                military: if live.owner.is_empty() {
+                    info.military
+                } else {
+                    live.military
+                },
+                country: "",
+            };
+        }
+        drop(i);
         info.country = country(aes);
         info.military |= (US_MILITARY.0..=US_MILITARY.1).contains(&aes);
         info
@@ -277,6 +569,32 @@ mod tests {
                 assert!(a.1 < b.0 || b.1 < a.0, "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_live_answer_is_read() {
+        // adsbdb's answers for 780ABB and AE2FAC (2026-11-21), shortened.
+        let cathay = r#"{"response":{"aircraft":{"type":"A350 941","icao_type":"A359","manufacturer":"Airbus","mode_s":"780ABB","registration":"B-LRP","registered_owner_country_iso_name":"CN","registered_owner":"Cathay Pacific Airways","url_photo":null}}}"#;
+        let a = parse_live(cathay).expect("found");
+        assert_eq!(
+            (a.registration.as_str(), a.type_code.as_str()),
+            ("B-LRP", "A359")
+        );
+        assert_eq!(a.owner, "Cathay Pacific Airways");
+        assert_eq!(a.description, "Airbus A350 941");
+        assert!(!a.military);
+        let usaf = r#"{"response":{"aircraft":{"type":"C-17A Globemaster III","icao_type":"C17","manufacturer":"Boeing","registration":"08-8200","registered_owner":"United States Air Force"}}}"#;
+        assert!(parse_live(usaf).expect("found").military);
+        assert!(parse_live(r#"{"response":"unknown aircraft"}"#).is_none());
+        // Escapes, and a line kept and read back.
+        let odd = r#"{"response":{"aircraft":{"registration":"A\"B\u00e9","icao_type":"","registered_owner":"Royal Australian Air Force"}}}"#;
+        let o = parse_live(odd).unwrap();
+        assert_eq!(o.registration, "A\"Bé");
+        let (aes, back) = read_live_line(&live_line(0x7CF800, &o)).unwrap();
+        assert_eq!(
+            (aes, back.owner.as_str(), back.military),
+            (0x7CF800, "Royal Australian Air Force", true)
+        );
     }
 
     #[test]

@@ -472,6 +472,7 @@ impl App {
         );
         p.set("scan", self.scan);
         p.set("hide_empty", self.hide_empty);
+        p.set("live_lookup", self.aircraft.live());
         p.set("volume", format!("{:.2}", self.volume));
         p.set(
             "tab",
@@ -534,6 +535,10 @@ impl App {
             self.tab = Tab::Signalling;
         }
         self.hide_empty = p.read("hide_empty").unwrap_or(false);
+        // On unless turned off: asked for (2026-11-21) to correct the
+        // database's military marks.
+        self.aircraft
+            .set_live(p.read("live_lookup").unwrap_or(true));
         self.filter = match p.get("aircraft") {
             Some("us") => Filter::Us,
             Some("military") => Filter::Military,
@@ -1826,6 +1831,22 @@ impl App {
             }
             aircraft::State::Ready { .. } => {}
         }
+        ui.horizontal(|ui| {
+            let mut live = self.aircraft.live();
+            if ui
+                .checkbox(&mut live, "live lookup")
+                .on_hover_text(format!(
+                    "Ask adsbdb.com about each aircraft seen ({}HEX): registration, type and owner, which come before the database's, and \"military\" from the owner. Only the 24-bit address is sent; answers are kept, so each is asked once.",
+                    aircraft::LIVE_URL
+                ))
+                .changed()
+            {
+                self.aircraft.set_live(live);
+            }
+            if live {
+                ui.label(RichText::new(self.aircraft.live_status()).color(DIM).size(11.0));
+            }
+        });
         // Newest first, one line per aircraft.
         let mut seen: Vec<(u32, f64, &str, usize)> = Vec::new();
         for l in self.log.iter().rev() {
