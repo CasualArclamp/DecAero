@@ -145,3 +145,117 @@ pub fn find(samples: &[Complex32], rate: f64, rates: &[u32], search_hz: f64) -> 
     }
     spectrum.find(rates, search_hz)
 }
+
+/// What [`find_bpsk`] says about a plain BPSK carrier.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FoundBpsk {
+    /// The candidate symbol rate whose clock line was found.
+    pub symbol_rate: f64,
+    /// Carrier offset from the centre of the samples given, in Hz.
+    pub offset_hz: f64,
+    /// The squared signal's carrier line over the median of its spectrum
+    /// (as an amplitude ratio, like [`Found::strength`]).
+    pub carrier_strength: f32,
+    /// The envelope's clock line over the median of its spectrum.
+    pub clock_strength: f32,
+}
+
+/// Find a plain BPSK carrier and name its symbol rate, again without a loop.
+///
+/// Squaring plain BPSK takes the modulation off and leaves one line at
+/// `2 fc` (not the pair an Aero carrier gives, which is how the two are told
+/// apart). The envelope `|x|^2` of a band-limited BPSK signal carries a line
+/// at the symbol rate. `symbol_rates` are the candidates; of those whose line
+/// stands within 6 dB of the strongest, the slowest is taken, because a
+/// carrier's envelope can also show a line at twice its own rate.
+pub fn find_bpsk(
+    samples: &[Complex32],
+    rate: f64,
+    symbol_rates: &[f64],
+    search_hz: f64,
+) -> Option<FoundBpsk> {
+    let mut n = 1usize << 12;
+    while (n * 2) <= samples.len() && rate / (n as f64) > 0.3 {
+        n *= 2;
+    }
+    if samples.len() < n {
+        return None;
+    }
+    let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
+    let window: Vec<f32> = (0..n)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
+        .collect();
+    let mut squared = vec![0f32; n];
+    let mut envelope = vec![0f32; n];
+    let mut buf = vec![Complex32::default(); n];
+    let mut start = 0;
+    while start + n <= samples.len() {
+        let seg = &samples[start..start + n];
+        for ((b, &s), &w) in buf.iter_mut().zip(seg).zip(&window) {
+            *b = s * s * w;
+        }
+        fft.process(&mut buf);
+        for (p, b) in squared.iter_mut().zip(&buf) {
+            *p += b.norm_sqr();
+        }
+        let mean = seg.iter().map(|s| s.norm_sqr()).sum::<f32>() / n as f32;
+        for ((b, &s), &w) in buf.iter_mut().zip(seg).zip(&window) {
+            *b = Complex32::new((s.norm_sqr() - mean) * w, 0.0);
+        }
+        fft.process(&mut buf);
+        for (p, b) in envelope.iter_mut().zip(&buf) {
+            *p += b.norm_sqr();
+        }
+        start += n / 2;
+    }
+    let median = |v: &[f32]| {
+        let mut sorted = v.to_vec();
+        sorted.sort_by(f32::total_cmp);
+        sorted[sorted.len() / 2].max(f32::MIN_POSITIVE)
+    };
+    let bin_hz = rate / n as f64;
+    // The carrier: the strongest squared bin within reach.
+    let steps = (2.0 * search_hz / bin_hz).ceil() as i64;
+    let (mut peak, mut at) = (0f32, 0i64);
+    for k in -steps..=steps {
+        let p = squared[k.rem_euclid(n as i64) as usize];
+        if p > peak {
+            (peak, at) = (p, k);
+        }
+    }
+    // A fraction of a bin from the neighbours (parabola through three bins).
+    let bin = |k: i64| squared[k.rem_euclid(n as i64) as usize];
+    let (l, m, r) = (bin(at - 1), bin(at), bin(at + 1));
+    let frac = if (l - 2.0 * m + r).abs() > 0.0 {
+        0.5 * (l - r) / (l - 2.0 * m + r)
+    } else {
+        0.0
+    };
+    let offset_hz = (at as f64 + f64::from(frac)) * bin_hz / 2.0;
+    let carrier_strength = (peak / median(&squared)).sqrt();
+    // The clock line of each candidate (positive frequencies only).
+    let env_median = median(&envelope[1..n / 2]);
+    let lines: Vec<(f64, f32)> = symbol_rates
+        .iter()
+        .filter(|&&rs| rs < rate / 2.0)
+        .map(|&rs| {
+            let k = (rs / bin_hz).round() as usize;
+            let p = (k.saturating_sub(1)..=k + 1)
+                .map(|i| envelope[i.min(n - 1)])
+                .fold(0.0, f32::max);
+            (rs, (p / env_median).sqrt())
+        })
+        .collect();
+    let strongest = lines.iter().map(|l| l.1).fold(0.0, f32::max);
+    let (symbol_rate, clock_strength) = lines
+        .iter()
+        .filter(|l| l.1 >= 0.5 * strongest)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .copied()?;
+    Some(FoundBpsk {
+        symbol_rate,
+        offset_hz,
+        carrier_strength,
+        clock_strength,
+    })
+}

@@ -9,6 +9,7 @@
 //! "voice follow".
 
 pub mod channel;
+mod corr;
 pub mod feed;
 pub mod iqrec;
 pub mod net;
@@ -572,6 +573,7 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             rates,
             eager,
             search_hz: (width_hz * 0.75).max(700.0),
+            width_hz,
             started_s: seconds,
             known_rate,
             // Set just before a decoder the user placed is started.
@@ -1004,7 +1006,12 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
             rejected.retain(|(_, when)| seconds - when < 60.0);
             scan_rejected.retain(|(_, when)| seconds - when < 60.0);
             if options.follow {
-                for c in &found.carriers {
+                // Widest first: the few always-on correction carriers then get a
+                // worker before the cap on workers is taken up by the many narrow
+                // places still being looked at.
+                let mut by_width: Vec<&survey::Carrier> = found.carriers.iter().collect();
+                by_width.sort_by(|a, b| b.width_hz.total_cmp(&a.width_hz));
+                for c in by_width {
                     let near = |hz: f64, reach: f64| (hz - c.center_hz).abs() < reach;
                     let busy = workers.iter().any(|w| {
                         !w.closed && near(w.offset_hz, (w.width_hz + c.width_hz) / 2.0 + 300.0)
@@ -1019,10 +1026,18 @@ fn front_end(mut source: Box<dyn Source>, mut options: Options, shared: Arc<Shar
                     }
                     // Wide carriers are left to the deep scan, which names a
                     // weak one far more surely than a short look here can.
-                    if c.width_hz >= 2200.0 {
+                    // Between the slow Aero rates and the fast ones sit the
+                    // L-band correction carriers (about 2.5 to 4.5 kHz): a
+                    // worker with no Aero rate to look for goes straight to
+                    // the check for those.
+                    if c.width_hz >= 5000.0 {
                         continue;
                     }
-                    let rates = vec![600, 1200];
+                    let rates = if c.width_hz >= 2200.0 {
+                        Vec::new()
+                    } else {
+                        vec![600, 1200]
+                    };
                     spawn(
                         &mut workers,
                         &mut next_id,

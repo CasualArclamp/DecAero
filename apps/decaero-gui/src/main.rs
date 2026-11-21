@@ -1204,8 +1204,13 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!(
-                    "{:+.2} kHz · Aero {}",
+                    "{:+.2} kHz · {} {}",
                     c.carrier_hz / 1e3,
+                    if matches!(c.kind, Kind::Corr(_)) {
+                        "L-band"
+                    } else {
+                        "Aero"
+                    },
                     c.label()
                 ))
                 .color(WHITE)
@@ -1313,11 +1318,17 @@ impl App {
                     format!("{} of {} bits wrong", c.uw_wrong, c.uw_bits),
                     None,
                 ),
-                (
-                    "CRC",
-                    format!("{} good · {} bad", c.crc_good, c.crc_bad),
-                    Some(if bad { WARN } else { GOOD }),
-                ),
+                if matches!(c.kind, Kind::Corr(_)) {
+                    // No CRC is known in these frames; the zero tail and
+                    // the re-encoded bits are the checks.
+                    ("CRC", "none known".to_string(), Some(DIM))
+                } else {
+                    (
+                        "CRC",
+                        format!("{} good · {} bad", c.crc_good, c.crc_bad),
+                        Some(if bad { WARN } else { GOOD }),
+                    )
+                },
                 (
                     "Frames",
                     format!("{} · {} lock losses", c.frames, c.lock_losses),
@@ -1419,6 +1430,43 @@ impl App {
             ),
             ("CPU", format!("{:.1}% of a core", c.cpu * 100.0), None),
         ];
+        // A correction carrier: what of its frame is in the clear, in place
+        // of the aircraft and ground station.
+        if matches!(c.kind, Kind::Corr(_)) {
+            list.retain(|(label, _, _)| {
+                !matches!(*label, "Aircraft" | "Type" | "Operator" | "Ground")
+            });
+            for (label, _, _) in &mut list {
+                if *label == "Last unit" {
+                    *label = "Last frame";
+                }
+            }
+            let framed = c.corr_id.is_some() || c.uw_bits > 0;
+            let mut clear = vec![
+                (
+                    "Service ID",
+                    c.corr_id.map_or("–".into(), |v| format!("{v:04X}")),
+                    Some(GOOD),
+                ),
+                (
+                    "Field",
+                    c.corr_field
+                        .map_or("–".into(), |v| format!("{v:02X} (7 bits after the ID)")),
+                    None,
+                ),
+                (
+                    "Payload",
+                    if framed {
+                        "encrypted (a subscription service)".to_string()
+                    } else {
+                        "no frame known: code lock only".to_string()
+                    },
+                    Some(DIM),
+                ),
+            ];
+            clear.append(&mut list);
+            list = clear;
+        }
         // What the call's progress units have said, the newest of each.
         let call = self
             .view
@@ -1871,6 +1919,7 @@ fn tag(c: &ChannelStatus) -> (&'static str, Color32) {
         (_, false) => ("srch", ORANGE),
         (Kind::C, true) => ("C", GOOD),
         (Kind::P(_), true) => ("P", VFO),
+        (Kind::Corr(_), true) => ("corr", TRACE),
     }
 }
 
