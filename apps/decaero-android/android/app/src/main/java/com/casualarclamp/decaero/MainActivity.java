@@ -36,6 +36,8 @@ public class MainActivity extends NativeActivity {
 
     /** The radio in use. Kept so its descriptor stays open for the Rust side. */
     private UsbDeviceConnection connection;
+    /** Its names as Android read them: "manufacturer\nproduct". */
+    private volatile String names = "\n";
     /** A chosen file's descriptor; -1 while choosing, -2 when nothing was chosen. */
     private volatile int pickedFd = -1;
 
@@ -150,8 +152,19 @@ public class MainActivity extends NativeActivity {
                 connection.close();
             }
             connection = usb.openDevice(radio);
+            String maker = radio.getManufacturerName();
+            String product = radio.getProductName();
+            names = (maker == null ? "" : maker) + "\n" + (product == null ? "" : product);
             return connection == null ? -3 : connection.getFileDescriptor();
         }
+    }
+
+    /**
+     * The manufacturer and product names of the radio openUsb() last opened,
+     * one to a line. They tell an RTL-SDR Blog V4 from other dongles.
+     */
+    public String usbNames() {
+        return names;
     }
 
     /** Show the system's file chooser; takePickedFd() has the answer later. */

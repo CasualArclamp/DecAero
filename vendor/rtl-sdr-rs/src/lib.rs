@@ -37,6 +37,36 @@ pub(crate) fn usb_devices() -> std::result::Result<Vec<nusb::DeviceInfo>, nusb::
     Ok(Vec::new())
 }
 
+/// Added in DecAero's copy: the manufacturer and product names of the dongle
+/// about to be opened with `open_with_fd`, from whoever opened it (Android
+/// knows them). They decide whether it is a Blog V4, whose tuner has a
+/// different reference: where a name is given it is used instead of the one
+/// the driver reads itself. Taken by the next open.
+static USB_STRINGS_HINT: std::sync::Mutex<Option<(Option<String>, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+pub fn hint_usb_strings(manufacturer: Option<String>, product: Option<String>) {
+    *USB_STRINGS_HINT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((manufacturer, product));
+}
+
+pub(crate) fn take_usb_strings_hint() -> Option<(Option<String>, Option<String>)> {
+    USB_STRINGS_HINT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+/// Added in DecAero's copy: whether the R82xx's PLL locked the last time it
+/// was set (the driver notes it but tells nobody).
+pub(crate) static PLL_LOCKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub fn pll_locked() -> bool {
+    PLL_LOCKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct TunerId;
 impl TunerId {
     pub const R820T: &'static str = R820T_TUNER_ID;
@@ -259,6 +289,11 @@ impl RtlSdr {
         self.sdr.get_tuner_id()
     }
     /// The RTL-SDR Blog variant detected at init (V4 / V4L), or `BlogModel::None`.
+    /// Added in DecAero's copy: the manufacturer and product names in use.
+    pub fn usb_names(&self) -> (Option<String>, Option<String>) {
+        self.sdr.usb_names()
+    }
+
     pub fn blog_model(&self) -> BlogModel {
         self.sdr.blog_model()
     }

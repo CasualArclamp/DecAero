@@ -541,6 +541,14 @@ impl RtlSdr {
         self.blog
     }
 
+    /// Added in DecAero's copy: the manufacturer and product names in use.
+    pub fn usb_names(&self) -> (Option<String>, Option<String>) {
+        match self.handle.usb_strings() {
+            Ok((manufacturer, product, _)) => (manufacturer, product),
+            Err(_) => (None, None),
+        }
+    }
+
     fn set_i2c_repeater(&self, enable: bool) -> Result<()> {
         let val = match enable {
             true => 0x18,

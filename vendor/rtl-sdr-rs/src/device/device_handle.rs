@@ -31,7 +31,17 @@ impl DeviceHandle {
     pub fn open(device_id: DeviceId) -> Result<Self> {
         let (device, usb_strings) = match device_id {
             DeviceId::Fd(fd) => DeviceHandle::open_device_with_fd(fd).map(|device| {
-                let strings = read_device_strings(&device);
+                let mut strings = read_device_strings(&device);
+                // Added in DecAero's copy: names handed in win (see
+                // `hint_usb_strings`).
+                if let Some((manufacturer, product)) = crate::take_usb_strings_hint() {
+                    if manufacturer.is_some() {
+                        strings.0 = manufacturer;
+                    }
+                    if product.is_some() {
+                        strings.1 = product;
+                    }
+                }
                 (device, strings)
             }),
             DeviceId::Index(idx) => DeviceHandle::open_from_usb(UsbSelector::Index(idx)),

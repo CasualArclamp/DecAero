@@ -60,10 +60,23 @@ pub trait RadioControl: Send + Sync {
     fn set_gain(&self, name: &str, value: f64) -> Result<()>;
 }
 
-/// Asks the system for a USB device with one of these (vendor, product) ids
-/// and gives its open file descriptor, or says why not. The descriptor stays
-/// the system's: it is duplicated here before use.
-pub type UsbOpener = Box<dyn Fn(&[(u16, u16)]) -> std::result::Result<i32, String> + Send + Sync>;
+/// A USB device the system has opened: its file descriptor, which stays the
+/// system's (it is duplicated here before use), and the names the system
+/// read from it, where it has them.
+pub struct UsbDevice {
+    pub fd: i32,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+}
+
+/// Asks the system for a USB device with one of these (vendor, product) ids,
+/// or says why there is none.
+pub type UsbOpener =
+    Box<dyn Fn(&[(u16, u16)]) -> std::result::Result<UsbDevice, String> + Send + Sync>;
+
+/// A descriptor of ours and the device's manufacturer and product names.
+#[allow(dead_code)]
+pub(crate) type Handed = (UsbFd, Option<String>, Option<String>);
 
 static USB_OPENER: std::sync::OnceLock<UsbOpener> = std::sync::OnceLock::new();
 
@@ -88,24 +101,25 @@ pub(crate) type UsbFd = std::convert::Infallible;
 /// (Android); `None` where the driver finds the radio itself.
 #[cfg(unix)]
 #[allow(dead_code)] // used by whichever radios are compiled in
-fn usb_fd(ids: &[(u16, u16)]) -> Result<Option<UsbFd>> {
+fn usb_fd(ids: &[(u16, u16)]) -> Result<Option<Handed>> {
     use std::os::fd::BorrowedFd;
     let Some(opener) = USB_OPENER.get() else {
         return Ok(None);
     };
-    let fd = opener(ids).map_err(bad)?;
+    let device = opener(ids).map_err(bad)?;
+    let fd = device.fd;
     // SAFETY: the opener has just returned this descriptor as open, and it
     // stays open (the app keeps the connection) while we duplicate it.
     //
     // Rust note: `BorrowedFd` is a descriptor we may use but not close;
     // `try_clone_to_owned` is `dup`, giving one that is ours to close.
     let ours = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
-    Ok(Some(ours))
+    Ok(Some((ours, device.manufacturer, device.product)))
 }
 
 #[cfg(not(unix))]
 #[allow(dead_code)]
-fn usb_fd(_ids: &[(u16, u16)]) -> Result<Option<UsbFd>> {
+fn usb_fd(_ids: &[(u16, u16)]) -> Result<Option<Handed>> {
     Ok(None)
 }
 
@@ -353,6 +367,8 @@ impl<C: Send + Sync> RadioControl for Live<C> {
 
 /// An open radio as an input for the engine.
 pub struct RadioSource {
+    /// The driver's own description is shown in place of `name`.
+    own_words: bool,
     name: String,
     inner: Box<dyn IqSource>,
     control: Option<Arc<dyn RadioControl>>,
@@ -387,9 +403,14 @@ impl Source for RadioSource {
         Some(std::mem::replace(&mut self.held, rest))
     }
     fn describe(&self) -> String {
+        let name = if self.own_words {
+            self.inner.describe()
+        } else {
+            self.name.clone()
+        };
         match &self.failure {
-            Some(why) => format!("{} · {why}", self.name),
-            None => format!("{} · {:.3} MS/s", self.name, self.inner.sample_rate() / 1e6),
+            Some(why) => format!("{name} · {why}"),
+            None => format!("{name} · {:.3} MS/s", self.inner.sample_rate() / 1e6),
         }
     }
     fn live(&self) -> bool {
@@ -424,6 +445,8 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
             g.value = v.clamp(g.min, g.max);
         }
     }
+    #[allow(unused_mut)]
+    let mut own_words = false;
     let (inner, control): (Box<dyn IqSource>, Option<Arc<dyn RadioControl>>) =
         match req.key.as_str() {
             #[cfg(feature = "hackrf")]
@@ -446,7 +469,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
             "airspy" => {
                 // Android: the system opens it, and the driver is told.
                 #[cfg(target_os = "android")]
-                if let Some(fd) = usb_fd(&[(0x1d50, 0x60a1)])? {
+                if let Some((fd, _, _)) = usb_fd(&[(0x1d50, 0x60a1)])? {
                     libairspy_rs::offer_fd(fd);
                 }
                 let s = decsat_io::AirspySource::open(decsat_io::AirspySettings {
@@ -520,8 +543,11 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
                     gain_tenths: (value(&gains, "gain") * 10.0) as i32,
                     manual_gain: value(&gains, "auto") < 0.5,
                     bias_tee: req.bias_tee && info.bias_tee.is_some(),
-                    fd: usb_fd(&RTL_IDS)?,
+                    handed: usb_fd(&RTL_IDS)?,
                 })?;
+                // It says which dongle and tuner it found, and whether the
+                // tuner's PLL holds: worth more than the list's name.
+                own_words = true;
                 let live = Live {
                     ctl: s.control(),
                     gains: gains.into(),
@@ -561,6 +587,7 @@ pub fn open(req: &RadioRequest) -> Result<RadioSource> {
             other => return Err(bad(format!("{other} is not built into this program"))),
         };
     Ok(RadioSource {
+        own_words,
         name: info.name,
         inner,
         control,

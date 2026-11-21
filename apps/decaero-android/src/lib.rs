@@ -51,7 +51,7 @@ fn java<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>) -> R
 /// Ask Android for a USB device with one of these ids: `MainActivity.openUsb`
 /// shows the permission dialog if need be and waits for the answer, so this
 /// must not be called on the thread that draws.
-fn open_usb(ids: &[(u16, u16)]) -> Result<i32, String> {
+fn open_usb(ids: &[(u16, u16)]) -> Result<decaero_radio::UsbDevice, String> {
     let flat: Vec<i32> = ids
         .iter()
         .flat_map(|(v, p)| [i32::from(*v), i32::from(*p)])
@@ -63,7 +63,26 @@ fn open_usb(ids: &[(u16, u16)]) -> Result<i32, String> {
             .i()
     })?;
     match fd {
-        fd if fd >= 0 => Ok(fd),
+        fd if fd >= 0 => {
+            // "manufacturer\nproduct" as Android read them, either may be empty.
+            let names = java(|env, activity| {
+                let text = env
+                    .call_method(activity, "usbNames", "()Ljava/lang/String;", &[])?
+                    .l()?;
+                let text: String = env.get_string(&JString::from(text))?.into();
+                Ok(text)
+            })
+            .unwrap_or_default();
+            let mut names = names.split('\n').map(|n| {
+                let n = n.trim();
+                (!n.is_empty()).then(|| n.to_string())
+            });
+            Ok(decaero_radio::UsbDevice {
+                fd,
+                manufacturer: names.next().flatten(),
+                product: names.next().flatten(),
+            })
+        }
         -1 => Err("not plugged in (it needs a USB OTG lead, and enough power)".into()),
         -2 => Err("permission to use it was not given".into()),
         -4 => Err("no answer to the permission question".into()),

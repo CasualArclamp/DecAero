@@ -38,7 +38,7 @@ pub struct Settings {
     pub gain_tenths: i32,
     pub bias_tee: bool,
     /// Android: the descriptor the system opened. `None`: find the dongle.
-    pub fd: Option<crate::UsbFd>,
+    pub handed: Option<crate::Handed>,
 }
 
 enum Change {
@@ -94,12 +94,18 @@ fn set_gain(sdr: &mut RtlSdr, manual: bool, tenths: i32) -> rtl_sdr_rs::error::R
 /// Open and set up the dongle; the name it goes by. The settings end here,
 /// and with them our copy of the descriptor (the driver has its own).
 fn start(s: Settings) -> Result<(RtlSdr, String)> {
-    let mut sdr = match &s.fd {
+    let mut sdr = match &s.handed {
         #[cfg(unix)]
-        Some(fd) => RtlSdr::open_with_fd(std::os::fd::AsRawFd::as_raw_fd(fd)),
+        Some((fd, manufacturer, product)) => {
+            // The system's reading of the names decides whether this is a
+            // Blog V4, whose tuner runs from 28.8 MHz and not 16: with the
+            // wrong one its PLL cannot lock.
+            rtl_sdr_rs::hint_usb_strings(manufacturer.clone(), product.clone());
+            RtlSdr::open_with_fd(std::os::fd::AsRawFd::as_raw_fd(fd))
+        }
         // There is no such value on Windows (see `UsbFd`).
         #[cfg(not(unix))]
-        Some(never) => match *never {},
+        Some((never, _, _)) => match *never {},
         None => RtlSdr::open_with_index(0),
     }
     .map_err(|e| other("cannot open the dongle", e))?;
@@ -114,7 +120,16 @@ fn start(s: Settings) -> Result<(RtlSdr, String)> {
     sdr.reset_buffer().map_err(|e| other("buffer reset", e))?;
     let tuner = sdr.get_tuner_id().unwrap_or("unknown tuner").to_string();
     let name = match sdr.blog_model() {
-        rtl_sdr_rs::BlogModel::None => format!("RTL-SDR ({tuner})"),
+        // Not one the driver knows by name: show the names, so it can be
+        // seen why.
+        rtl_sdr_rs::BlogModel::None => {
+            let (manufacturer, product) = sdr.usb_names();
+            format!(
+                "RTL-SDR {} {} ({tuner})",
+                manufacturer.as_deref().unwrap_or("?"),
+                product.as_deref().unwrap_or("?")
+            )
+        }
         model => format!("RTL-SDR Blog {model} ({tuner})"),
     };
     Ok((sdr, name))
@@ -244,9 +259,14 @@ impl IqSource for Source {
     }
 
     fn describe(&self) -> String {
+        let mut text = self.name.clone();
+        // As the tuner reported when it was last tuned.
+        if !rtl_sdr_rs::pll_locked() {
+            text.push_str(" · PLL NOT LOCKED");
+        }
         match self.lost.load(Ordering::Relaxed) {
-            0 => self.name.clone(),
-            n => format!("{} · {n} blocks lost", self.name),
+            0 => text,
+            n => format!("{text} · {n} blocks lost"),
         }
     }
 }

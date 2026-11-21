@@ -901,9 +901,12 @@ impl R82xx {
         if (data[2] & 0x40) == 0 {
             info!("[R82xx] PLL not locked!");
             self.has_lock = false;
+            // Added in DecAero's copy (see `pll_locked` in lib.rs).
+            crate::PLL_LOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
         self.has_lock = true;
+        crate::PLL_LOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
 
         // Set PLL auto-tune = 8kHz
         self.write_reg_mask(handle, 0x1a, 0x08, 0x08)?;
