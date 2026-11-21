@@ -99,6 +99,12 @@ pub struct Band {
     span: f64,
     /// Where a left-button drag began (Hz): a new decoder's box is being drawn.
     drag_from: Option<f64>,
+    /// Where that drag has got to (Hz). Kept because a finger, unlike a
+    /// mouse, is nowhere once it is lifted.
+    drag_to: f64,
+    /// The spectrum as last drawn, a level a column, for finding how wide
+    /// the carrier under a double tap is.
+    shape: Vec<f32>,
     /// A view asked for on the command line, taken once the input is known.
     pub want_view: Option<(f64, f64)>,
     /// What is on screen (Hz from the centre, and screen pixels across),
@@ -183,6 +189,65 @@ fn overlay(zoom: &ZoomRow, cols: usize, lo: f64, hi: f64) -> Vec<Option<Column>>
         .collect()
 }
 
+/// The carrier under a point of the drawn spectrum: its middle and a box
+/// for it (Hz), from how far the hump there stands above the noise.
+/// `shape` is the trace, a level a column, across `lo..hi` Hz; `at` is the
+/// point as a fraction of the way across. Where there is no hump to be seen
+/// (a carrier narrower than a column or two, or noise) the box is the usual
+/// 1500 Hz about the point.
+///
+/// The noise is taken from near the point (the level three tenths of the
+/// columns within a fifth of the view either side lie under), not from the
+/// whole view: a band's edges roll off, and a recording's can be empty, and
+/// either would put the noise too low and make everything look like carrier.
+/// `floor`, the whole view's, is used only when the carrier fills that
+/// neighbourhood.
+fn carrier_at(shape: &[f32], floor: f32, at: f64, lo: f64, hi: f64) -> (f64, f64) {
+    let n = shape.len();
+    let hz_of = |column: f64| lo + (column + 0.5) / n as f64 * (hi - lo);
+    let usual = (lo + at * (hi - lo), 1500.0);
+    if n < 16 {
+        return usual;
+    }
+    // Smoothed over five columns: one draw of the noise must not end the hump.
+    let smooth = |i: usize| {
+        let (a, b) = (i.saturating_sub(2), (i + 3).min(n));
+        shape[a..b].iter().sum::<f32>() / (b - a) as f32
+    };
+    let c = ((at * n as f64) as usize).min(n - 1);
+    // The top of the hump is looked for a little either side of the finger.
+    let reach = (n / 60).max(3);
+    let top = (c.saturating_sub(reach)..(c + reach + 1).min(n))
+        .map(smooth)
+        .fold(f32::MIN, f32::max);
+    let near = n / 5;
+    let mut around: Vec<f32> = shape[c.saturating_sub(near)..(c + near + 1).min(n)].to_vec();
+    around.sort_unstable_by(f32::total_cmp);
+    let local = around[around.len() * 3 / 10];
+    let floor = if top >= local + 5.0 { local } else { floor };
+    if top < floor + 5.0 {
+        return usual;
+    }
+    // Its edges: where it has come two thirds of the way down to the noise.
+    let edge = floor + (top - floor) / 3.0;
+    if smooth(c) < edge {
+        return usual;
+    }
+    let mut left = c;
+    while left > 0 && smooth(left - 1) >= edge {
+        left -= 1;
+    }
+    let mut right = c;
+    while right + 1 < n && smooth(right + 1) >= edge {
+        right += 1;
+    }
+    let middle = (hz_of(left as f64) + hz_of(right as f64)) / 2.0;
+    let seen = hz_of(right as f64) - hz_of(left as f64) + (hi - lo) / n as f64;
+    // A little over what is seen (the skirts), and never so narrow that a
+    // tap a little off a slow carrier misses it.
+    (middle, (seen * 1.2).clamp(1500.0, 60_000.0))
+}
+
 fn read(row: &[f32], column: Column) -> f32 {
     match column {
         Column::Peak(a, b) => row[a..b].iter().copied().fold(f32::MIN, f32::max),
@@ -232,6 +297,8 @@ impl Band {
             hi: 0.5,
             span: 1.0,
             drag_from: None,
+            drag_to: 0.0,
+            shape: Vec::new(),
             want_view: None,
             shown: None,
             tuned: 0.0,
@@ -638,6 +705,7 @@ impl Band {
                 );
                 level += every;
             }
+            self.shape.clone_from(&trace);
             let levels = trace;
             let points: Vec<egui::Pos2> = levels
                 .into_iter()
@@ -791,13 +859,17 @@ impl Band {
             let origin = ui
                 .input(|i| i.pointer.press_origin())
                 .unwrap_or(rect.center());
-            self.drag_from = Some(hz_at(origin.x, lo, hi));
+            let at = hz_at(origin.x, lo, hi);
+            (self.drag_from, self.drag_to) = (Some(at), at);
         }
         let mut made = None;
         if let Some(from) = self.drag_from {
-            let now = ui
-                .input(|i| i.pointer.latest_pos())
-                .map_or(from, |p| hz_at(p.x, lo, hi));
+            // The end of the box follows the pointer while there is one
+            // (a lifted finger leaves none: the box ends where it last was).
+            if let Some(p) = ui.input(|i| i.pointer.latest_pos()) {
+                self.drag_to = hz_at(p.x, lo, hi);
+            }
+            let now = self.drag_to;
             let (a, b) = (from.min(now), from.max(now));
             if response.dragged_by(PointerButton::Primary) {
                 let box_ = egui::Rect::from_min_max(
@@ -855,14 +927,21 @@ impl Band {
         if let Some(p) = response.interact_pointer_pos() {
             let hz = hz_at(p.x, lo, hi);
             if response.double_clicked() {
-                // A box of the usual width; shift for a wide carrier.
-                let width_hz = if ui.input(|i| i.modifiers.shift) {
-                    9000.0
-                } else {
-                    1500.0
+                // A box as wide as the carrier there is seen to be; shift
+                // for the old fixed 9 kHz.
+                if ui.input(|i| i.modifiers.shift) {
+                    return Action::Add {
+                        offset_hz: hz,
+                        width_hz: 9000.0,
+                    };
+                }
+                let at = f64::from((p.x - rect.left()) / rect.width());
+                let (offset_hz, width_hz) = match self.auto {
+                    Some((floor, _)) => carrier_at(&self.shape, floor, at, lo, hi),
+                    None => (hz, 1500.0),
                 };
                 return Action::Add {
-                    offset_hz: hz,
+                    offset_hz,
                     width_hz,
                 };
             }
@@ -1019,6 +1098,39 @@ mod tests {
         // Nothing but noise: still a fair range, not the noise blown up.
         let (lo, hi) = waterfall_range(-100.0, -98.0);
         assert!(hi - lo >= 25.0);
+    }
+
+    #[test]
+    fn a_double_tap_finds_the_carriers_width() {
+        // 1000 columns over 100 kHz: noise at -90 dB, a carrier 9 kHz wide
+        // and 15 dB up centred 20 kHz above the middle.
+        let mut shape: Vec<f32> = (0..1000).map(|i| -90.0 + (i % 3) as f32 * 0.5).collect();
+        shape[655..745].fill(-75.0);
+        // Tapped a third of the way into it.
+        let (middle, width) = carrier_at(&shape, -90.0, 0.685, -50_000.0, 50_000.0);
+        assert!((middle - 20_000.0).abs() < 300.0, "{middle}");
+        assert!((9_000.0..12_500.0).contains(&width), "{width}");
+        // Tapped on the noise: the usual box, where the tap was.
+        let (middle, width) = carrier_at(&shape, -90.0, 0.2, -50_000.0, 50_000.0);
+        assert_eq!((middle, width), (-30_000.0, 1500.0));
+        // Empty band edges (a recording's) and a rolled-off skirt must not
+        // pull the noise down: the whole view's floor is then far too low.
+        shape[..150].fill(-140.0);
+        shape[850..].fill(-140.0);
+        let (middle, width) = carrier_at(&shape, -140.0, 0.70, -50_000.0, 50_000.0);
+        assert!((middle - 20_000.0).abs() < 300.0, "{middle}");
+        assert!((9_000.0..12_500.0).contains(&width), "{width}");
+        // Zoomed in until the carrier is most of what is near: the view's
+        // own floor then says where the noise is.
+        let mut close: Vec<f32> = vec![-90.0; 1000];
+        close[250..750].fill(-75.0);
+        let (middle, width) = carrier_at(&close, -90.0, 0.5, 0.0, 20_000.0);
+        assert!((middle - 10_000.0).abs() < 100.0, "{middle}");
+        assert!((10_000.0..12_500.0).contains(&width), "{width}");
+        // A carrier a column or two wide: at least the usual box.
+        shape[300] = -70.0;
+        let (_, width) = carrier_at(&shape, -90.0, 0.3005, -50_000.0, 50_000.0);
+        assert_eq!(width, 1500.0);
     }
 
     #[test]

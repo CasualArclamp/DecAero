@@ -10,7 +10,7 @@
 //! On Android the same code is started by `apps/decaero-android`, which hands
 //! over what a phone does differently in a [`Platform`].
 //!
-//! `decaero-gui [--noisy-osc] [--touch [--panel chan|log|planes|calls|input|more] [--keys]] [--size WxH] [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--follow-range LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
+//! `decaero-gui [--no-follow] [--noisy-osc] [--touch [--panel chan|log|planes|calls|input|more] [--keys]] [--size WxH] [FILE.wav | --net URL [--rate HZ] [--iq int8|uint8|int16|float32] | --radio hackrf|airspy|pluto|sdrplay|fobos|rtl|uhd [--rate HZ] [--bias-tee]] [--center MHZ] [--fast] [--screenshot OUT.png --after SECS [--step SECS:HZ] [--record-iq OUT.wav]] [--select HZ] [--view LO_HZ:HI_HZ] [--follow-range LO_HZ:HI_HZ] [--add HZ:WIDTH] [--out-dir DIR] [--activity FILE] [--prefs FILE | --no-prefs]`
 
 mod activity;
 mod aircraft;
@@ -2298,6 +2298,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
     let mut touch = platform.touch;
     let mut size = None;
     let mut noisy_oscillator = false;
+    let mut no_follow = false;
     let mut panel = None;
     let mut keys = false;
     let mut file = None;
@@ -2329,6 +2330,8 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
             "--fast" => fast = true,
             "--touch" => touch = true,
             "--noisy-osc" => noisy_oscillator = true,
+            // Start no decoder until one is placed by hand.
+            "--no-follow" => no_follow = true,
             // For an unattended look at the touch layout: a side panel
             // open, or the keys up.
             "--panel" => panel = args.next().as_deref().and_then(touch::Panel::parse),
@@ -2438,7 +2441,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
                 select_hz,
                 tab: Tab::Messages,
                 center_text,
-                follow: true,
+                follow: !no_follow,
                 scan: true,
                 fast,
                 paused: false,
@@ -2539,6 +2542,10 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
             }
             app.pick_radio(usual);
             app.recall(&given);
+            // The command line outranks what was kept.
+            if no_follow {
+                app.follow = false;
+            }
             if let Some(f) = &file {
                 app.open(f);
             } else if net_url.is_some() {
