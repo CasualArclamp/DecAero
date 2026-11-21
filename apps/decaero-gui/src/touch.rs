@@ -74,6 +74,31 @@ pub enum Target {
     Station,
 }
 
+/// How long frames are taking: the mean, and the longest of the last two
+/// seconds or so. A frame that takes long is a sign the phone is short of
+/// time (or is slowing itself down to stay cool).
+#[derive(Default)]
+pub struct Frames {
+    mean_ms: f32,
+    worst_ms: f32,
+    /// The longest frame of the stretch now being measured, and its length.
+    worst_now: f32,
+    seconds: f32,
+}
+
+impl Frames {
+    fn note(&mut self, dt: f32) {
+        let ms = dt * 1e3;
+        self.mean_ms += 0.05 * (ms - self.mean_ms);
+        self.worst_now = self.worst_now.max(ms);
+        self.seconds += dt;
+        if self.seconds >= 2.0 {
+            self.worst_ms = self.worst_now;
+            (self.worst_now, self.seconds) = (0.0, 0.0);
+        }
+    }
+}
+
 /// The on-screen keys, open over everything while a box is filled in.
 pub struct Keypad {
     target: Target,
@@ -217,6 +242,10 @@ impl App {
         egui::Panel::top("touch-top")
             .frame(plain(PANEL, 6, 3))
             .show(ui, |ui| self.touch_bar(ui));
+        egui::Panel::bottom("touch-figures")
+            .frame(plain(WELL, 6, 1))
+            .show_separator_line(false)
+            .show(ui, |ui| self.figures(ui));
         if let Some(panel) = self.panel {
             // The band keeps at least 240 points.
             let width = panel.width().min(screen - 62.0 - 240.0).max(220.0);
@@ -234,6 +263,70 @@ impl App {
                 self.band_buttons(ui, area);
             });
         self.keys(ui);
+    }
+
+    /// One small line along the bottom for seeing what is wrong when
+    /// something is: how the drawing keeps up, what the receiver costs,
+    /// samples lost on the way, and how the selected carrier is being held.
+    fn figures(&mut self, ui: &mut Ui) {
+        self.frames.note(ui.input(|i| i.unstable_dt));
+        let v = &self.view;
+        let decoders: f32 = v.channels.iter().map(|c| c.cpu).sum();
+        // The radio's own count of blocks it could not hand on is in its
+        // description ("12 blocks lost"); the engine's is `dropped_blocks`.
+        let radio_lost = v
+            .source
+            .split(" · ")
+            .find(|part| part.ends_with("blocks lost"))
+            .and_then(|part| part.split(' ').next())
+            .unwrap_or("0");
+        let mut parts = vec![
+            (
+                format!(
+                    "draw {:.0} ms, worst {:.0}",
+                    self.frames.mean_ms, self.frames.worst_ms
+                ),
+                self.frames.worst_ms > 50.0,
+            ),
+            (
+                format!(
+                    "CPU front {:.0}% + {} dec {:.0}% of a core",
+                    v.load * 100.0,
+                    v.channels.iter().filter(|c| !c.closed).count(),
+                    decoders * 100.0
+                ),
+                // The front end is one thread: near a whole core it cannot
+                // keep up with the radio.
+                v.load > 0.8,
+            ),
+            (
+                format!("lost: radio {radio_lost}, engine {}", v.dropped_blocks),
+                radio_lost != "0" || v.dropped_blocks > 0,
+            ),
+        ];
+        if v.source.contains("PLL NOT LOCKED") {
+            parts.push(("tuner PLL NOT LOCKED".to_string(), true));
+        }
+        if let Some(c) = self.selected() {
+            parts.push((
+                format!(
+                    "sel {:+.1} Hz from acquired, clock {:+.0} ppm, coherence {:.2}, {} lock losses",
+                    c.carrier_hz - c.acquired_hz,
+                    c.clock_ppm,
+                    c.coherence,
+                    c.lock_losses
+                ),
+                false,
+            ));
+        }
+        parts.push((decaero_engine::vector_level().to_string(), false));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            for (text, bad) in parts {
+                let colour = if bad { WARN } else { DIM };
+                ui.add(egui::Label::new(RichText::new(text).color(colour).size(10.0)).truncate());
+            }
+        });
     }
 
     /// The buttons down the left edge.
@@ -362,7 +455,10 @@ impl App {
 
     /// The row of buttons on the band: what a finger does, and the zoom.
     fn band_buttons(&mut self, ui: &mut Ui, area: egui::Rect) {
-        let (h, gap) = (36.0, 4.0);
+        // With a panel open the band can be narrower than the row: the
+        // buttons are then made narrower to suit, so none is pushed off.
+        let fit = ((area.width() - 12.0) / 372.0).clamp(0.6, 1.0);
+        let (h, gap) = (36.0, 4.0 * fit);
         // Rust note: a `Cell` lets the closure below and the code around it
         // both move this along without a mutable borrow held between calls.
         let right = std::cell::Cell::new(area.right() - 6.0);
@@ -370,12 +466,15 @@ impl App {
         let see_through = |c: Color32| c.gamma_multiply(0.82);
         // Laid out from the right, so the list is in reverse.
         let button = |ui: &mut Ui, text: &str, w: f32, on: bool| {
+            let w = w * fit;
             let rect = egui::Rect::from_min_size(egui::pos2(right.get() - w, top), vec2(w, h));
             right.set(right.get() - w - gap);
             let fill = see_through(if on { GREEN_FILL } else { PANEL2 });
-            let text = RichText::new(text)
-                .size(13.0)
-                .color(if on { GOOD } else { TEXT });
+            let text =
+                RichText::new(text)
+                    .size(13.0 * fit.max(0.8))
+                    .color(if on { GOOD } else { TEXT });
+            ui.spacing_mut().button_padding.x = 2.0;
             ui.put(rect, egui::Button::new(text).fill(fill)).clicked()
         };
         // Minus and plus keep their places; All comes and goes to their left.

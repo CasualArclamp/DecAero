@@ -216,6 +216,8 @@ struct App {
     panel: Option<touch::Panel>,
     keypad: Option<touch::Keypad>,
     picker: Option<Box<dyn Picker>>,
+    /// For the touch layout's line of figures: how long frames take.
+    frames: touch::Frames,
 }
 
 impl App {
@@ -2493,6 +2495,7 @@ pub fn run(args: Vec<String>, mut platform: Platform) -> eframe::Result {
                 panel,
                 keypad: None,
                 picker,
+                frames: touch::Frames::default(),
             };
             // Settings of the last run. An unattended screenshot run keeps
             // to its command line: it neither reads nor writes them, unless
