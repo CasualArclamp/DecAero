@@ -607,3 +607,20 @@ emulator was driven by single taps), a real phone's speed.
 
 Not done: running in the background, a notification for calls, CI and a
 release job for the APK, the other radios over USB (HackRF, Pluto).
+
+## A drifting receiver
+
+Seen 2026-11-21 on an RTL-SDR Blog V4 on a phone: a P 1200 carrier would not
+stay locked, its constellation a ring. Nothing was short of time (8 ms a
+frame, 13 % of a core, no blocks lost); the carrier was moving at about
+1.3 Hz a second as the dongle warmed, and the frequency loop, which took a
+tenth of the error a block, lagged behind it.
+
+The loop (`decaero-dsp/src/demod.rs`) now also learns the rate of drift and
+adds it every block (`DRIFT_GAIN`), held to 6 Hz a second. Measured on the
+test modulator at 5 dB Es/N0 (`a_drifting_carrier_is_followed`): at 3 Hz/s
+the bit error rate was 24 % at 600 bit/s and is now 1.7 % (1.2 % standing
+still, unchanged); at 1.5 Hz/s it is the same as standing still. On the
+recordings (`areo.wav`'s three weak P 10500, `areo2`, `areo4`) the CRC
+counts are the same with and without it, within a frame or two.
+Not yet seen on the dongle itself.
