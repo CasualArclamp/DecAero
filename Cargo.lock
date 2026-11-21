@@ -489,11 +489,11 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "decaero-ambe"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "decaero-android"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "decaero-gui",
  "decaero-radio",
@@ -505,11 +505,11 @@ dependencies = [
 
 [[package]]
 name = "decaero-core"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "decaero-dsp"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "decaero-ambe",
  "decaero-core",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "decaero-engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "decaero-ambe",
  "decaero-core",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "decaero-gui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "cpal",
  "decaero-core",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "decaero-radio"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "decaero-engine",
  "decsat-core",
