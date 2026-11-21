@@ -28,6 +28,10 @@ written in Rust. Receive only.
 - A scan of the whole band finds the carriers and starts a decoder on each;
   you can also drag across a carrier to add one, and it names the mode itself.
 - A decoder that loses its carrier finds it again on its own.
+- The L-band correction carriers between the Aero channels (BPSK, 2438, 1219
+  and 1200 symbols/s) are found too. Their payload is encrypted, so only what
+  is in the clear is shown: lock, the frame's ID and header bits, signal and
+  FEC figures.
 
 **Voice**
 - Voice follow: when a ground station assigns a voice channel, a decoder is

@@ -39,6 +39,9 @@ pub enum Kind {
     Rt(u32),
     /// C channel (voice) at 8400 bit/s.
     C,
+    /// An L-band correction carrier (plain BPSK, not Aero) at this symbol
+    /// rate, whole: 2438, 1219 or 1200 (`decaero_core::corr`).
+    Corr(u32),
     /// No Aero line pair found: the worker has stopped.
     NotAero,
     /// The carrier went away: the worker has stopped.
@@ -52,6 +55,7 @@ impl Kind {
             Kind::P(r) => format!("P {r}"),
             Kind::Rt(r) => format!("R/T {r}"),
             Kind::C => "C 8400".into(),
+            Kind::Corr(r) => format!("corr {r}"),
             Kind::NotAero => "not Aero".into(),
             Kind::Ended => "ended".into(),
         }
@@ -120,6 +124,10 @@ pub struct ChannelStatus {
     pub bursts: u64,
     /// The worker has stopped (the carrier went, or it was removed).
     pub closed: bool,
+    /// A correction carrier's clear header: its 16-bit ID and the 7 bits
+    /// after it, from the last frame.
+    pub corr_id: Option<u16>,
+    pub corr_field: Option<u8>,
 }
 
 impl ChannelStatus {
@@ -167,6 +175,8 @@ impl ChannelStatus {
             audio_level: 0.0,
             bursts: 0,
             closed: false,
+            corr_id: None,
+            corr_field: None,
         }
     }
 }
@@ -243,6 +253,8 @@ pub struct Request {
     pub rates: Vec<u32>,
     /// How far from `offset_hz` the carrier may be.
     pub search_hz: f64,
+    /// How wide the carrier looked (or the box the user drew), in Hz.
+    pub width_hz: f64,
     pub started_s: f64,
     /// Set when the deep scan has already named the bit rate and put
     /// `offset_hz` on the carrier: the worker starts decoding at once.
@@ -256,7 +268,7 @@ pub struct Request {
 }
 
 /// Es/N0 (as a ratio) that gives raw bit error rate `p` on an antipodal signal.
-fn es_n0_for_ber(p: f32) -> f32 {
+pub(crate) fn es_n0_for_ber(p: f32) -> f32 {
     // Invert p = Q(sqrt(2 g)) by bisection on g in dB.
     let q = |g: f32| 0.5 * erfc(g.sqrt());
     let (mut lo, mut hi) = (-10.0f32, 20.0f32);
@@ -445,6 +457,8 @@ pub fn run(
     let mut kept: Vec<Arc<Vec<Complex32>>> = Vec::new();
     let mut tries = 0;
     let mut running: Option<Running> = None;
+    // A correction carrier instead (`corr.rs`).
+    let mut corr_run: Option<crate::corr::CorrRunning> = None;
     let mut seconds = req.started_s;
     let mut busy = 0.0f64;
     let mut last_second = seconds.floor();
@@ -466,7 +480,7 @@ pub fn run(
         seconds += block_seconds;
         samples_seen.fetch_add(block.len() as u64, Ordering::Relaxed);
 
-        if running.is_none() {
+        if running.is_none() && corr_run.is_none() {
             coarse.process(&block, &mut coarse_out);
             kept.push(block.clone());
             let have = coarse_out.len() as f64 / coarse.out_rate();
@@ -491,6 +505,34 @@ pub fn run(
                         .is_none_or(|second| f.strength > 1.6 * second.strength)
             });
             let Some(best) = best else {
+                // Not Aero; perhaps a correction carrier (a voice channel
+                // that is expected is not looked at for one).
+                if !req.eager
+                    && let Some(found) = crate::corr::find(
+                        &kept,
+                        req.in_rate,
+                        req.offset_hz,
+                        req.search_hz,
+                        req.width_hz,
+                    )
+                {
+                    let mut c = crate::corr::start(
+                        req.in_rate,
+                        req.offset_hz + found.offset_hz,
+                        found,
+                        req.started_s,
+                        &status,
+                    );
+                    let mut t = req.started_s;
+                    for b in kept.drain(..) {
+                        t += b.len() as f64 / req.in_rate;
+                        c.process(&b, t, id, &status, &events, &mut narrow, &mut soft);
+                    }
+                    coarse_out = Vec::new();
+                    corr_run = Some(c);
+                    quiet_since = seconds;
+                    continue;
+                }
                 if tries >= if req.eager { 30 } else { 2 } {
                     status.lock().unwrap().kind = Kind::NotAero;
                     break;
@@ -524,6 +566,20 @@ pub fn run(
             coarse_out = Vec::new();
             running = Some(r);
             quiet_since = seconds;
+        } else if let Some(c) = corr_run.as_mut() {
+            c.process(
+                &block,
+                seconds,
+                id,
+                &status,
+                &events,
+                &mut narrow,
+                &mut soft,
+            );
+            if c.gave_up() {
+                status.lock().unwrap().kind = Kind::NotAero;
+                break;
+            }
         } else if let Some(r) = running.as_mut() {
             process(
                 r,
@@ -571,7 +627,7 @@ pub fn run(
         } else {
             30.0
         };
-        if running.is_some() && seconds - quiet_since > patience {
+        if (running.is_some() || corr_run.is_some()) && seconds - quiet_since > patience {
             break;
         }
     }

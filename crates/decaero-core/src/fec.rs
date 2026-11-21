@@ -177,6 +177,50 @@ impl Viterbi {
     }
 }
 
+impl Viterbi {
+    /// Decode a block whose encoder was already running when it began (any
+    /// start state) and that ends flushed to the all-zero state: every bit,
+    /// traced back from state 0.
+    pub fn decode_terminated(&mut self, soft: &[f32]) -> Vec<u8> {
+        self.reset();
+        self.history.reserve(soft.len() / 2);
+        for pair in soft.chunks_exact(2) {
+            self.step(pair[0], pair[1]);
+        }
+        let n = self.history.len();
+        let mut out = vec![0u8; n];
+        let mut s = 0usize;
+        for i in (0..n).rev() {
+            out[i] = (s & 1) as u8;
+            let d = (self.history[i] >> s) & 1;
+            s = (s >> 1) | ((d as usize) << 5);
+        }
+        self.history.clear();
+        out
+    }
+
+    /// Decode a piece cut out of a continuous stream: any start state, and
+    /// traced back from the best final state. The last few dozen bits are
+    /// the least sure.
+    pub fn decode_free(&mut self, soft: &[f32]) -> Vec<u8> {
+        self.reset();
+        self.history.reserve(soft.len() / 2);
+        for pair in soft.chunks_exact(2) {
+            self.step(pair[0], pair[1]);
+        }
+        let n = self.history.len();
+        let mut out = vec![0u8; n];
+        let mut s = self.best_state();
+        for i in (0..n).rev() {
+            out[i] = (s & 1) as u8;
+            let d = (self.history[i] >> s) & 1;
+            s = (s >> 1) | ((d as usize) << 5);
+        }
+        self.history.clear();
+        out
+    }
+}
+
 /// Put back the bits a rate 2/3 punctured code left out: after every three
 /// received bits one "not received" (JAERO `depunture_soft_block`, pattern 4).
 pub fn depuncture_2_3(soft: &[f32], out: &mut Vec<f32>) {

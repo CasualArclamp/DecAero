@@ -4,6 +4,7 @@
 pub mod adsc;
 pub mod c21frame;
 pub mod cframe;
+pub mod corr;
 pub mod fec;
 pub mod mplpc;
 pub mod pframe;

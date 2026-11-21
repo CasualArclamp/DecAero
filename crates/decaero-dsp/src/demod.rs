@@ -33,6 +33,11 @@ pub enum Modulation {
     /// A-QPSK: offset QPSK, root raised cosine with this roll-off
     /// (JAERO uses 1.0 at 10500 bit/s and 0.6 at 8400 bit/s).
     AQpsk { roll_off: f32 },
+    /// Plain BPSK (the L-band correction carriers, `decaero_core::corr`):
+    /// root raised cosine with this roll-off, or unfiltered (rectangular
+    /// pulses, integrate and dump) when it is 0. No quarter turn and no
+    /// differential step: the soft bits are the samples themselves.
+    Bpsk { roll_off: f32 },
 }
 
 impl Modulation {
@@ -127,7 +132,12 @@ impl Demod {
     /// [`Demod::process`] (six to ten samples a bit suits it), `offset_hz`
     /// the carrier's offset from its centre as acquisition found it.
     pub fn new(modulation: Modulation, bit_rate: u32, rate: f64, offset_hz: f64) -> Self {
-        let bit_rate = f64::from(bit_rate);
+        Self::with_rate(modulation, f64::from(bit_rate), rate, offset_hz)
+    }
+
+    /// As [`Demod::new`], for a symbol rate that is not a whole number of
+    /// hertz (the correction carriers run at 51200/21 symbols a second).
+    pub fn with_rate(modulation: Modulation, bit_rate: f64, rate: f64, offset_hz: f64) -> Self {
         let sps = rate / bit_rate;
         let mut taps = match modulation {
             // Half a sine over two bits: MSK's own pulse.
@@ -139,6 +149,11 @@ impl Demod {
             }
             // A symbol on one rail lasts two bits.
             Modulation::AQpsk { roll_off } => rrc(2.0 * sps, f64::from(roll_off), 8),
+            // Unfiltered BPSK: its matched filter is a running sum over one symbol.
+            Modulation::Bpsk { roll_off } if roll_off <= 0.0 => {
+                vec![1.0; (sps.round() as usize).max(1)]
+            }
+            Modulation::Bpsk { roll_off } => rrc(sps, f64::from(roll_off), 8),
         };
         let energy = taps.iter().map(|t| t * t).sum::<f32>().sqrt();
         for t in &mut taps {
@@ -212,8 +227,11 @@ impl Demod {
         self.hist[k] * (1.0 - f) + self.hist[k + 1] * f
     }
 
-    /// A quarter circle back per bit.
-    fn turn(index: u64) -> Complex32 {
+    /// A quarter circle back per bit (none for plain BPSK).
+    fn turn(&self, index: u64) -> Complex32 {
+        if matches!(self.modulation, Modulation::Bpsk { .. }) {
+            return Complex32::new(1.0, 0.0);
+        }
         match index & 3 {
             0 => Complex32::new(1.0, 0.0),
             1 => Complex32::new(0.0, -1.0),
@@ -265,7 +283,7 @@ impl Demod {
         let mut centre = Vec::with_capacity(b);
         let mut energy = 0f32;
         for n in 0..b {
-            let turn = Self::turn(self.bit_index + n as u64);
+            let turn = self.turn(self.bit_index + n as u64);
             let q = n * 4 / b;
             for (k, sum) in quarters[q].iter_mut().enumerate() {
                 let offset = (k as f64 - (TRIALS / 2) as f64) / TRIALS as f64;
@@ -392,6 +410,7 @@ impl Demod {
                         out.push(if v * self.last_a >= 0.0 { mag } else { -mag });
                         self.last_a = v;
                     }
+                    Modulation::Bpsk { .. } => out.push(v),
                     Modulation::AQpsk { .. } => {
                         // The turn leaves I0, Q0, -I1, -Q1, ...: undo the signs.
                         let sign = if (self.held_index + i as u64) & 2 == 0 {

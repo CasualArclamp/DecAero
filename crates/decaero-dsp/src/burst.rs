@@ -42,6 +42,8 @@ fn matched_taps(modulation: Modulation, sps: f64) -> Vec<f32> {
                 .collect()
         }
         Modulation::AQpsk { roll_off } => rrc(2.0 * sps, f64::from(roll_off), 8),
+        // Bursts are Aero only; plain BPSK is here for completeness.
+        Modulation::Bpsk { roll_off } => rrc(sps, f64::from(roll_off.max(0.1)), 8),
     };
     let energy = taps.iter().map(|t| t * t).sum::<f32>().sqrt();
     for t in &mut taps {
@@ -239,6 +241,7 @@ pub fn demodulate(
                 last = a;
             }
             Modulation::AQpsk { .. } => soft.push(if n & 2 == 0 { a } else { -a }),
+            Modulation::Bpsk { .. } => soft.push(a),
         }
     }
     Some(BurstBits {
@@ -249,7 +252,9 @@ pub fn demodulate(
         // Offset QPSK is shown with the offset taken out, as the continuous
         // channels are (`demod.rs`): the four corners of plain QPSK.
         scatter: match modulation {
-            Modulation::ABpsk => rotated.iter().map(|v| v * scale).collect(),
+            Modulation::ABpsk | Modulation::Bpsk { .. } => {
+                rotated.iter().map(|v| v * scale).collect()
+            }
             Modulation::AQpsk { .. } => rotated
                 .chunks_exact(2)
                 .map(|pair| Complex32::new(pair[0].re, pair[1].re) * scale)
